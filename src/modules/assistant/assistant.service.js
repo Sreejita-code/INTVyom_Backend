@@ -43,7 +43,6 @@ const createAssistant = async (data) => {
   let externalResponseData = null;
 
   try {
-    // Agent to ignore SSL errors
     const agent = new https.Agent({ rejectUnauthorized: false });
 
     console.log('Sending request to External Assistant API:', externalPayload);
@@ -54,13 +53,12 @@ const createAssistant = async (data) => {
       {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}` // Use the user's stored key
+          'Authorization': `Bearer ${user.api_key}`
         },
         httpsAgent: agent
       }
     );
 
-    // Capture the external response data
     externalResponseData = response.data;
 
   } catch (error) {
@@ -88,46 +86,117 @@ const createAssistant = async (data) => {
   return await newAssistant.save();
 };
 
-// --- 2. List Assistants (New) ---
+// --- 2. List Assistants (Existing) ---
 const listAssistants = async (userId) => {
-  // Fetch the User to get their API Key
   const user = await User.findById(userId);
-  if (!user) {
-    throw new Error('User not found');
-  }
-  if (!user.api_key) {
-    throw new Error('User does not have an API Key. Please generate one first.');
-  }
+  if (!user) throw new Error('User not found');
+  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
 
   try {
-    // Agent to ignore SSL errors
     const agent = new https.Agent({ rejectUnauthorized: false });
-
-    // Call External API
     const response = await axios.get(
       'https://api-livekit-vyom.indusnettechnologies.com/assistant/list',
       {
-        headers: {
-          'Authorization': `Bearer ${user.api_key}` // Inject the stored key
-        },
+        headers: { 'Authorization': `Bearer ${user.api_key}` },
         httpsAgent: agent
       }
     );
-
-    // Return the external data directly
     return response.data;
-
   } catch (error) {
     console.error('External List API Failed:', error.message);
+    if (error.response) throw new Error(error.response.data.message || 'Failed to fetch assistants');
+    throw new Error('Failed to contact external service');
+  }
+};
+
+// --- 3. Get Assistant Details (Existing) ---
+const getAssistantDetails = async (userId, assistantId) => {
+  const user = await User.findById(userId);
+  if (!user) throw new Error('User not found');
+  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+
+  try {
+    const agent = new https.Agent({ rejectUnauthorized: false });
+    const response = await axios.get(
+      `https://api-livekit-vyom.indusnettechnologies.com/assistant/details/${assistantId}`,
+      {
+        headers: { 'Authorization': `Bearer ${user.api_key}` },
+        httpsAgent: agent
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('External Details API Failed:', error.message);
     if (error.response) {
-      // Pass the specific error message from the external API
-      throw new Error(error.response.data.message || 'Failed to fetch assistants from external service');
+      if (error.response.status === 404) throw new Error('Assistant not found in external system');
+      throw new Error(error.response.data.message || 'Failed to fetch assistant details');
     }
     throw new Error('Failed to contact external service');
   }
 };
 
+// --- 4. Update Assistant (New) ---
+const updateAssistant = async (userId, assistantId, updateData) => {
+  // 1. Get User and Key
+  const user = await User.findById(userId);
+  if (!user) throw new Error('User not found');
+  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+
+  // 2. Call External API
+  try {
+    const agent = new https.Agent({ rejectUnauthorized: false });
+
+    console.log(`Updating Assistant ${assistantId} externally with data:`, updateData);
+
+    await axios.patch(
+      `https://api-livekit-vyom.indusnettechnologies.com/assistant/update/${assistantId}`,
+      updateData,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.api_key}`
+        },
+        httpsAgent: agent
+      }
+    );
+
+  } catch (error) {
+    console.error('External Update API Failed:', error.message);
+    if (error.response) {
+      console.error('Server Response:', JSON.stringify(error.response.data, null, 2));
+      throw new Error(error.response.data.message || 'Failed to update assistant externally');
+    }
+    throw new Error('Failed to contact external service');
+  }
+
+  // 3. Sync Local DB (Update only fields that are present)
+  // We map the incoming keys to our local schema keys
+  const localUpdateFields = {};
+  if (updateData.assistant_name) localUpdateFields.name = updateData.assistant_name;
+  if (updateData.assistant_description) localUpdateFields.description = updateData.assistant_description;
+  if (updateData.assistant_prompt) localUpdateFields.prompt = updateData.assistant_prompt;
+  if (updateData.assistant_tts_model) localUpdateFields.model = updateData.assistant_tts_model;
+  if (updateData.assistant_tts_config) localUpdateFields.config = updateData.assistant_tts_config;
+  if (updateData.assistant_start_instruction) localUpdateFields.start_instruction = updateData.assistant_start_instruction;
+  if (updateData.assistant_end_call_url) localUpdateFields.end_call_url = updateData.assistant_end_call_url;
+
+  const updatedAssistant = await Assistant.findOneAndUpdate(
+    { external_assistant_id: assistantId }, 
+    { $set: localUpdateFields },
+    { new: true } // Return the updated document
+  );
+
+  return {
+    success: true,
+    message: "Assistant updated successfully",
+    data: { assistant_id: assistantId },
+    local_data: updatedAssistant 
+  };
+};
+
 module.exports = {
   createAssistant,
-  listAssistants
+  listAssistants,
+  getAssistantDetails,
+  updateAssistant
 };
