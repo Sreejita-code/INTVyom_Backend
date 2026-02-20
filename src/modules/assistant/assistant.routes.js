@@ -11,4 +11,6 @@ router.get('/details/:id', assistantController.details);
 // Matches: PATCH /api/assistant/update/550e8400...
 router.patch('/update/:id', assistantController.update);
 
+router.delete('/delete/:id', assistantController.deleteAssistant);
+
 module.exports = router;

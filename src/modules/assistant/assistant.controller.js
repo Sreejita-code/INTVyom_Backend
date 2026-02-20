@@ -56,13 +56,11 @@ const details = async (req, res) => {
   }
 };
 
-// --- 4. Update Controller (New) ---
+// --- 4. Update Controller (Existing) ---
 const update = async (req, res) => {
   try {
-    // Usage: PATCH /api/assistant/update/550e84...
-    // Body: { "user_id": "...", "assistant_name": "New Name" }
-    const { id } = req.params; // Assistant ID from URL
-    const { user_id, ...updateData } = req.body; // Extract user_id, keep rest as data
+    const { id } = req.params; 
+    const { user_id, ...updateData } = req.body; 
 
     if (!user_id) {
       return res.status(400).json({ error: 'user_id is required in the request body' });
@@ -72,9 +70,30 @@ const update = async (req, res) => {
       return res.status(400).json({ error: 'Assistant ID is required' });
     }
 
-    // Call service to update external API + local DB
     const result = await assistantService.updateAssistant(user_id, id, updateData);
+    res.status(200).json(result);
 
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// --- 5. Delete Controller (New) ---
+const deleteAssistant = async (req, res) => {
+  try {
+    const { id } = req.params;
+    // user_id can be sent in query string or body depending on frontend implementation
+    const userId = req.query.user_id || req.body.user_id;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'user_id is required' });
+    }
+
+    if (!id) {
+      return res.status(400).json({ error: 'Assistant ID is required' });
+    }
+
+    const result = await assistantService.deleteAssistant(userId, id);
     res.status(200).json(result);
 
   } catch (error) {
@@ -86,5 +105,6 @@ module.exports = {
   create,
   list,
   details,
-  update // Export the new function
+  update,
+  deleteAssistant // Export the new function
 };

@@ -13,19 +13,13 @@ const createAssistant = async (data) => {
     assistant_tts_model, 
     assistant_tts_config,
     assistant_start_instruction,
-    assistant_end_call_url // Optional field
+    assistant_end_call_url 
   } = data;
 
-  // Fetch the User to get their API Key
   const user = await User.findById(user_id);
-  if (!user) {
-    throw new Error('User not found');
-  }
-  if (!user.api_key) {
-    throw new Error('User does not have an API Key. Please generate one first.');
-  }
+  if (!user) throw new Error('User not found');
+  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
 
-  // Prepare the External API Request Payload
   const externalPayload = {
     assistant_name,
     assistant_description,
@@ -35,7 +29,6 @@ const createAssistant = async (data) => {
     assistant_start_instruction
   };
 
-  // Only add this field if it was provided in the request
   if (assistant_end_call_url) {
     externalPayload.assistant_end_call_url = assistant_end_call_url;
   }
@@ -44,9 +37,6 @@ const createAssistant = async (data) => {
 
   try {
     const agent = new https.Agent({ rejectUnauthorized: false });
-
-    console.log('Sending request to External Assistant API:', externalPayload);
-
     const response = await axios.post(
       'https://api-livekit-vyom.indusnettechnologies.com/assistant/create',
       externalPayload,
@@ -60,17 +50,11 @@ const createAssistant = async (data) => {
     );
 
     externalResponseData = response.data;
-
   } catch (error) {
-    console.error('External Assistant API Failed:', error.message);
-    if (error.response) {
-      console.error('Server Response:', JSON.stringify(error.response.data, null, 2));
-      throw new Error(error.response.data.message || 'External API Error');
-    }
+    if (error.response) throw new Error(error.response.data.message || 'External API Error');
     throw new Error('Failed to contact external assistant service');
   }
 
-  // Save the result to our Local DB
   const newAssistant = new Assistant({
     user_id: user._id,
     external_assistant_id: externalResponseData.data.assistant_id,
@@ -103,7 +87,6 @@ const listAssistants = async (userId) => {
     );
     return response.data;
   } catch (error) {
-    console.error('External List API Failed:', error.message);
     if (error.response) throw new Error(error.response.data.message || 'Failed to fetch assistants');
     throw new Error('Failed to contact external service');
   }
@@ -126,7 +109,6 @@ const getAssistantDetails = async (userId, assistantId) => {
     );
     return response.data;
   } catch (error) {
-    console.error('External Details API Failed:', error.message);
     if (error.response) {
       if (error.response.status === 404) throw new Error('Assistant not found in external system');
       throw new Error(error.response.data.message || 'Failed to fetch assistant details');
@@ -135,19 +117,14 @@ const getAssistantDetails = async (userId, assistantId) => {
   }
 };
 
-// --- 4. Update Assistant (New) ---
+// --- 4. Update Assistant (Existing) ---
 const updateAssistant = async (userId, assistantId, updateData) => {
-  // 1. Get User and Key
   const user = await User.findById(userId);
   if (!user) throw new Error('User not found');
   if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
 
-  // 2. Call External API
   try {
     const agent = new https.Agent({ rejectUnauthorized: false });
-
-    console.log(`Updating Assistant ${assistantId} externally with data:`, updateData);
-
     await axios.patch(
       `https://api-livekit-vyom.indusnettechnologies.com/assistant/update/${assistantId}`,
       updateData,
@@ -159,18 +136,11 @@ const updateAssistant = async (userId, assistantId, updateData) => {
         httpsAgent: agent
       }
     );
-
   } catch (error) {
-    console.error('External Update API Failed:', error.message);
-    if (error.response) {
-      console.error('Server Response:', JSON.stringify(error.response.data, null, 2));
-      throw new Error(error.response.data.message || 'Failed to update assistant externally');
-    }
+    if (error.response) throw new Error(error.response.data.message || 'Failed to update assistant externally');
     throw new Error('Failed to contact external service');
   }
 
-  // 3. Sync Local DB (Update only fields that are present)
-  // We map the incoming keys to our local schema keys
   const localUpdateFields = {};
   if (updateData.assistant_name) localUpdateFields.name = updateData.assistant_name;
   if (updateData.assistant_description) localUpdateFields.description = updateData.assistant_description;
@@ -183,7 +153,7 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   const updatedAssistant = await Assistant.findOneAndUpdate(
     { external_assistant_id: assistantId }, 
     { $set: localUpdateFields },
-    { new: true } // Return the updated document
+    { new: true } 
   );
 
   return {
@@ -194,9 +164,52 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   };
 };
 
+// --- 5. Delete Assistant (New) ---
+const deleteAssistant = async (userId, assistantId) => {
+  const user = await User.findById(userId);
+  if (!user) throw new Error('User not found');
+  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+
+  try {
+    const agent = new https.Agent({ rejectUnauthorized: false });
+
+    console.log(`Deleting Assistant ${assistantId} externally`);
+
+    // Call the external API to delete
+    await axios.delete(
+      `https://api-livekit-vyom.indusnettechnologies.com/assistant/delete/${assistantId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${user.api_key}`
+        },
+        httpsAgent: agent
+      }
+    );
+
+  } catch (error) {
+    console.error('External Delete API Failed:', error.message);
+    if (error.response) {
+      console.error('Server Response:', JSON.stringify(error.response.data, null, 2));
+      throw new Error(error.response.data.message || 'Failed to delete assistant externally');
+    }
+    throw new Error('Failed to contact external service');
+  }
+
+  // Delete the assistant from the Local Database
+  const deletedAssistant = await Assistant.findOneAndDelete({ external_assistant_id: assistantId });
+
+  return {
+    success: true,
+    message: "Assistant deleted successfully",
+    data: { assistant_id: assistantId },
+    local_data_removed: !!deletedAssistant
+  };
+};
+
 module.exports = {
   createAssistant,
   listAssistants,
   getAssistantDetails,
-  updateAssistant
+  updateAssistant,
+  deleteAssistant // Export the new function
 };
