@@ -4,6 +4,8 @@ const cors = require('cors'); // 1. Import cors
 const connectDB = require('./config/db');
 const authRoutes = require('./modules/auth/auth.routes');
 const assistantRoutes = require('./modules/assistant/assistant.routes');
+const sipRoutes = require('./modules/sip/sip.routes');
+const callRoutes = require('./modules/call/call.routes');
 
 const app = express();
 
@@ -17,6 +19,8 @@ connectDB();
 // Mount Modules
 app.use('/api/auth', authRoutes);
 app.use('/api/assistant', assistantRoutes);
+app.use('/api/sip', sipRoutes);
+app.use('/api/call', callRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
