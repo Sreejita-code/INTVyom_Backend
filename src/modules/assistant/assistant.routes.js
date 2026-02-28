@@ -12,5 +12,6 @@ router.get('/details/:id', assistantController.details);
 router.patch('/update/:id', assistantController.update);
 
 router.delete('/delete/:id', assistantController.deleteAssistant);
+router.get('/call-logs/:id', assistantController.getCallLogs);
 
 module.exports = router;
