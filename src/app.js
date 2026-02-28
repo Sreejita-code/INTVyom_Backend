@@ -7,6 +7,7 @@ const assistantRoutes = require('./modules/assistant/assistant.routes');
 const sipRoutes = require('./modules/sip/sip.routes');
 const callRoutes = require('./modules/call/call.routes');
 const integrationRoutes = require('./modules/integration/integration.routes');
+const toolRoutes = require('./modules/tool/tool.routes');
 
 const app = express();
 
@@ -23,6 +24,7 @@ app.use('/api/assistant', assistantRoutes);
 app.use('/api/sip', sipRoutes);
 app.use('/api/call', callRoutes);
 app.use('/api/integration', integrationRoutes);
+app.use('/api/tool', toolRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
