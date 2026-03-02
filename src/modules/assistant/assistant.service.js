@@ -25,7 +25,7 @@ const createAssistant = async (data) => {
   // 2. Fetch Third-Party Integration API Key (Sarvam / Cartesia)
   let final_tts_config = { ...assistant_tts_config }; // Clone to avoid modifying the original request
 
-  if (['sarvam', 'cartesia'].includes(assistant_tts_model?.toLowerCase())) {
+  if (['sarvam', 'cartesia', 'elevenlabs'].includes(assistant_tts_model?.toLowerCase())) { 
     const integration = await Integration.findOne({
       user_id: user._id,
       service_name: assistant_tts_model.toLowerCase()
@@ -157,7 +157,7 @@ const updateAssistant = async (userId, assistantId, updateData) => {
       if (existingAssistant) modelToCheck = existingAssistant.model;
     }
 
-    if (['sarvam', 'cartesia'].includes(modelToCheck?.toLowerCase())) {
+    if (['sarvam', 'cartesia', 'elevenlabs'].includes(modelToCheck?.toLowerCase())) {
       const integration = await Integration.findOne({ 
         user_id: user._id, 
         service_name: modelToCheck.toLowerCase() 
