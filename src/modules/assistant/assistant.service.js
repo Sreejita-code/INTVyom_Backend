@@ -2,7 +2,7 @@ const axios = require('axios');
 const https = require('https');
 const Assistant = require('./assistant.model');
 const User = require('../auth/user.model'); 
-const Integration = require('../integration/integration.model'); // <-- Added Integration Model
+const Integration = require('../integration/integration.model');
 
 // --- 1. Create Assistant ---
 const createAssistant = async (data) => {
@@ -23,7 +23,7 @@ const createAssistant = async (data) => {
   if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
 
   // 2. Fetch Third-Party Integration API Key (Sarvam / Cartesia)
-  let final_tts_config = { ...assistant_tts_config }; // Clone to avoid modifying the original request
+  let final_tts_config = { ...assistant_tts_config }; 
 
   if (['sarvam', 'cartesia', 'elevenlabs'].includes(assistant_tts_model?.toLowerCase())) { 
     const integration = await Integration.findOne({
@@ -35,7 +35,6 @@ const createAssistant = async (data) => {
       throw new Error(`Integration required: Please integrate your ${assistant_tts_model} API key in the Integrations module first.`);
     }
 
-    // Inject the API key directly into the configuration block for the external API
     final_tts_config.api_key = integration.api_key;
   }
 
@@ -45,7 +44,7 @@ const createAssistant = async (data) => {
     assistant_description,
     assistant_prompt,
     assistant_tts_model,
-    assistant_tts_config: final_tts_config, // Use the config WITH the injected API key
+    assistant_tts_config: final_tts_config, 
     assistant_start_instruction
   };
 
@@ -75,14 +74,14 @@ const createAssistant = async (data) => {
     throw new Error('Failed to contact external assistant service');
   }
 
-  // 4. Save to Local DB (Saving the original config WITHOUT the plain text API key for security)
+  // 4. Save to Local DB
   const newAssistant = new Assistant({
     user_id: user._id,
     external_assistant_id: externalResponseData.data.assistant_id,
     name: assistant_name,
     description: assistant_description,
     model: assistant_tts_model,
-    config: assistant_tts_config, // Original config without API key
+    config: assistant_tts_config,
     prompt: assistant_prompt,
     start_instruction: assistant_start_instruction, 
     end_call_url: assistant_end_call_url || null
@@ -144,13 +143,10 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   if (!user) throw new Error('User not found');
   if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
 
-  // Clone update data to safely mutate the payload going to the external API
   const externalUpdatePayload = { ...updateData };
 
-  // 1. Check if TTS config or model is being updated, requiring an API key injection
   if (externalUpdatePayload.assistant_tts_model || externalUpdatePayload.assistant_tts_config) {
     
-    // Determine the active model (either passed in the request, or fetched from DB)
     let modelToCheck = externalUpdatePayload.assistant_tts_model;
     if (!modelToCheck) {
       const existingAssistant = await Assistant.findOne({ external_assistant_id: assistantId });
@@ -167,7 +163,6 @@ const updateAssistant = async (userId, assistantId, updateData) => {
         throw new Error(`Integration required: Please integrate your ${modelToCheck} API key in the Integrations module first.`);
       }
 
-      // Ensure config exists and inject the key
       if (!externalUpdatePayload.assistant_tts_config) {
         externalUpdatePayload.assistant_tts_config = {};
       }
@@ -175,12 +170,11 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     }
   }
 
-  // 2. Call External API with the injected payload
   try {
     const agent = new https.Agent({ rejectUnauthorized: false });
     await axios.patch(
       `https://api-livekit-vyom.indusnettechnologies.com/assistant/update/${assistantId}`,
-      externalUpdatePayload, // Sending the payload with the injected api_key
+      externalUpdatePayload, 
       {
         headers: {
           'Content-Type': 'application/json',
@@ -194,7 +188,6 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     throw new Error('Failed to contact external service');
   }
 
-  // 3. Update Local DB (Storing original input without plain-text API keys)
   const localUpdateFields = {};
   if (updateData.assistant_name) localUpdateFields.name = updateData.assistant_name;
   if (updateData.assistant_description) localUpdateFields.description = updateData.assistant_description;
@@ -254,10 +247,46 @@ const deleteAssistant = async (userId, assistantId) => {
   };
 };
 
+// --- 6. Get Call Logs ---
+const getCallLogs = async (userId, assistantId, queryParams) => {
+  const user = await User.findById(userId);
+  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+
+  const assistant = await Assistant.findOne({
+    $or: [
+      { _id: assistantId.match(/^[0-9a-fA-F]{24}$/) ? assistantId : null },
+      { external_assistant_id: assistantId }
+    ],
+    user_id: userId
+  });
+
+  if (!assistant) throw new Error('Assistant not found');
+
+  try {
+    const agent = new https.Agent({ rejectUnauthorized: false }); // Fixed ReferenceError here
+    const response = await axios.get(
+      `https://api-livekit-vyom.indusnettechnologies.com/assistant/call-logs/${assistant.external_assistant_id}`,
+      {
+        headers: { 'Authorization': `Bearer ${user.api_key}` },
+        params: queryParams, 
+        httpsAgent: agent // Using the instantiated agent
+      }
+    );
+    return response.data;
+  } catch (error) {
+    console.error("🚨 CALL LOGS ERROR:", error.response?.data || error.message || error); // Added logging to catch future errors
+    if (error.response) {
+      throw new Error(error.response.data.message || 'Failed to fetch call logs');
+    }
+    throw new Error('Failed to contact external service');
+  }
+};
+
 module.exports = {
   createAssistant,
   listAssistants,
   getAssistantDetails,
   updateAssistant,
-  deleteAssistant 
+  deleteAssistant,
+  getCallLogs 
 };

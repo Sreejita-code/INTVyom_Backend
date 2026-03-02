@@ -101,10 +101,46 @@ const deleteAssistant = async (req, res) => {
   }
 };
 
+const getCallLogs = async (req, res) => {
+  try {
+    const { id } = req.params; // The assistant ID
+    // Extract user_id and all possible LiveKit query parameters
+    const { 
+      user_id, 
+      page, 
+      limit, 
+      start_date, 
+      end_date, 
+      sort_by, 
+      sort_order 
+    } = req.query;
+
+    if (!user_id || !id) {
+      return res.status(400).json({ error: 'user_id and assistant id are required' });
+    }
+
+    // Build queryParams object dynamically, only including defined parameters
+    const queryParams = {};
+    if (page) queryParams.page = page;
+    if (limit) queryParams.limit = limit;
+    if (start_date) queryParams.start_date = start_date;
+    if (end_date) queryParams.end_date = end_date;
+    if (sort_by) queryParams.sort_by = sort_by;
+    if (sort_order) queryParams.sort_order = sort_order;
+
+    const result = await assistantService.getCallLogs(user_id, id, queryParams);
+    
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   create,
   list,
   details,
   update,
-  deleteAssistant // Export the new function
+  deleteAssistant, // Export the new function
+  getCallLogs
 };
