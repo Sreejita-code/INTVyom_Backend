@@ -8,6 +8,7 @@ const sipRoutes = require('./modules/sip/sip.routes');
 const callRoutes = require('./modules/call/call.routes');
 const integrationRoutes = require('./modules/integration/integration.routes');
 const toolRoutes = require('./modules/tool/tool.routes');
+const webCallRoutes = require('./modules/webcall/webcall.routes');
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use('/api/sip', sipRoutes);
 app.use('/api/call', callRoutes);
 app.use('/api/integration', integrationRoutes);
 app.use('/api/tool', toolRoutes);
+app.use('/api/web-call', webCallRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

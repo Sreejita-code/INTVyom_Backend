@@ -73,6 +73,26 @@ const listSipTrunks = async (userId) => {
   }
 };
 
+const getSipTrunkDetails = async (userId, trunkId) => {
+  const user = await User.findById(userId);
+  if (!user) throw new Error('User not found');
+
+  const trunk = await SipTrunk.findOne({
+    $or: [
+      { _id: trunkId.match(/^[0-9a-fA-F]{24}$/) ? trunkId : null },
+      { external_trunk_id: trunkId }
+    ],
+    user_id: user._id
+  });
+
+  if (!trunk) throw new Error('SIP Trunk not found');
+
+  return {
+    success: true,
+    data: trunk
+  };
+};
+
 const deleteSipTrunk = async (userId, trunkId) => {
   const user = await User.findById(userId);
   if (!user) throw new Error('User not found');
@@ -105,5 +125,6 @@ const deleteSipTrunk = async (userId, trunkId) => {
 module.exports = {
   createOutboundTrunk,
   listSipTrunks,
+  getSipTrunkDetails,
   deleteSipTrunk
 };

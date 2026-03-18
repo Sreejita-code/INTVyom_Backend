@@ -14,6 +14,10 @@ const createAssistant = async (data) => {
     assistant_tts_model, 
     assistant_tts_config,
     assistant_start_instruction,
+    assistant_interaction_config,          // NEW: Interaction config object
+    assistant_end_call_enabled,            // NEW: Boolean to enable end call tool
+    assistant_end_call_trigger_phrase,     // NEW: Trigger phrase string
+    assistant_end_call_agent_message,      // NEW: Agent message before ending call
     assistant_end_call_url 
   } = data;
 
@@ -39,18 +43,21 @@ const createAssistant = async (data) => {
   }
 
   // 3. Construct External Payload
+  // Include only defined/provided fields so external API can use its defaults
   const externalPayload = {
     assistant_name,
     assistant_description,
     assistant_prompt,
     assistant_tts_model,
-    assistant_tts_config: final_tts_config, 
-    assistant_start_instruction
+    assistant_tts_config: final_tts_config
   };
 
-  if (assistant_end_call_url) {
-    externalPayload.assistant_end_call_url = assistant_end_call_url;
-  }
+  if (assistant_start_instruction) externalPayload.assistant_start_instruction = assistant_start_instruction;
+  if (assistant_interaction_config) externalPayload.assistant_interaction_config = assistant_interaction_config;
+  if (typeof assistant_end_call_enabled === 'boolean') externalPayload.assistant_end_call_enabled = assistant_end_call_enabled;
+  if (assistant_end_call_trigger_phrase) externalPayload.assistant_end_call_trigger_phrase = assistant_end_call_trigger_phrase;
+  if (assistant_end_call_agent_message) externalPayload.assistant_end_call_agent_message = assistant_end_call_agent_message;
+  if (assistant_end_call_url) externalPayload.assistant_end_call_url = assistant_end_call_url;
 
   let externalResponseData = null;
 
@@ -81,10 +88,14 @@ const createAssistant = async (data) => {
     name: assistant_name,
     description: assistant_description,
     model: assistant_tts_model,
-    config: assistant_tts_config,
+    config: assistant_tts_config, // Keep original config locally, without the fetched secret key
     prompt: assistant_prompt,
     start_instruction: assistant_start_instruction, 
-    end_call_url: assistant_end_call_url || null
+    interaction_config: assistant_interaction_config,
+    end_call_enabled: assistant_end_call_enabled,
+    end_call_trigger_phrase: assistant_end_call_trigger_phrase,
+    end_call_agent_message: assistant_end_call_agent_message,
+    end_call_url: assistant_end_call_url
   });
 
   return await newAssistant.save();
@@ -188,14 +199,19 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     throw new Error('Failed to contact external service');
   }
 
+  // Use explicit undefined checks so boolean false isn't ignored
   const localUpdateFields = {};
-  if (updateData.assistant_name) localUpdateFields.name = updateData.assistant_name;
-  if (updateData.assistant_description) localUpdateFields.description = updateData.assistant_description;
-  if (updateData.assistant_prompt) localUpdateFields.prompt = updateData.assistant_prompt;
-  if (updateData.assistant_tts_model) localUpdateFields.model = updateData.assistant_tts_model;
-  if (updateData.assistant_tts_config) localUpdateFields.config = updateData.assistant_tts_config;
-  if (updateData.assistant_start_instruction) localUpdateFields.start_instruction = updateData.assistant_start_instruction;
-  if (updateData.assistant_end_call_url) localUpdateFields.end_call_url = updateData.assistant_end_call_url;
+  if (updateData.assistant_name !== undefined) localUpdateFields.name = updateData.assistant_name;
+  if (updateData.assistant_description !== undefined) localUpdateFields.description = updateData.assistant_description;
+  if (updateData.assistant_prompt !== undefined) localUpdateFields.prompt = updateData.assistant_prompt;
+  if (updateData.assistant_tts_model !== undefined) localUpdateFields.model = updateData.assistant_tts_model;
+  if (updateData.assistant_tts_config !== undefined) localUpdateFields.config = updateData.assistant_tts_config;
+  if (updateData.assistant_start_instruction !== undefined) localUpdateFields.start_instruction = updateData.assistant_start_instruction;
+  if (updateData.assistant_interaction_config !== undefined) localUpdateFields.interaction_config = updateData.assistant_interaction_config;
+  if (updateData.assistant_end_call_enabled !== undefined) localUpdateFields.end_call_enabled = updateData.assistant_end_call_enabled;
+  if (updateData.assistant_end_call_trigger_phrase !== undefined) localUpdateFields.end_call_trigger_phrase = updateData.assistant_end_call_trigger_phrase;
+  if (updateData.assistant_end_call_agent_message !== undefined) localUpdateFields.end_call_agent_message = updateData.assistant_end_call_agent_message;
+  if (updateData.assistant_end_call_url !== undefined) localUpdateFields.end_call_url = updateData.assistant_end_call_url;
 
   const updatedAssistant = await Assistant.findOneAndUpdate(
     { external_assistant_id: assistantId }, 
@@ -263,18 +279,18 @@ const getCallLogs = async (userId, assistantId, queryParams) => {
   if (!assistant) throw new Error('Assistant not found');
 
   try {
-    const agent = new https.Agent({ rejectUnauthorized: false }); // Fixed ReferenceError here
+    const agent = new https.Agent({ rejectUnauthorized: false }); 
     const response = await axios.get(
       `https://api-livekit-vyom.indusnettechnologies.com/assistant/call-logs/${assistant.external_assistant_id}`,
       {
         headers: { 'Authorization': `Bearer ${user.api_key}` },
         params: queryParams, 
-        httpsAgent: agent // Using the instantiated agent
+        httpsAgent: agent 
       }
     );
     return response.data;
   } catch (error) {
-    console.error("🚨 CALL LOGS ERROR:", error.response?.data || error.message || error); // Added logging to catch future errors
+    console.error("🚨 CALL LOGS ERROR:", error.response?.data || error.message || error); 
     if (error.response) {
       throw new Error(error.response.data.message || 'Failed to fetch call logs');
     }

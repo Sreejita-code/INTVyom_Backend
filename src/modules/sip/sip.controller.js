@@ -31,6 +31,25 @@ const list = async (req, res) => {
   }
 };
 
+const getDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.query.user_id;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'user_id is required' });
+    }
+    if (!id) {
+      return res.status(400).json({ error: 'Trunk ID is required' });
+    }
+
+    const result = await sipService.getSipTrunkDetails(userId, id);
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
+};
+
 const deleteTrunk = async (req, res) => {
   try {
     const { id } = req.params;
@@ -53,5 +72,6 @@ const deleteTrunk = async (req, res) => {
 module.exports = {
   createOutboundTrunk,
   list,
+  getDetails,
   deleteTrunk
 };
