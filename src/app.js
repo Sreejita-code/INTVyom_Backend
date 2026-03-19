@@ -29,6 +29,7 @@ app.use('/api/integration', integrationRoutes);
 app.use('/api/tool', toolRoutes);
 app.use('/api/web-call', webCallRoutes);
 app.use('/api/inbound',  inboundRoutes);
+app.use('/api/inbound-context-strategy', require('./modules/inbound-context-strategy/inbound-context-strategy.routes'));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
