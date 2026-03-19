@@ -9,6 +9,7 @@ const callRoutes = require('./modules/call/call.routes');
 const integrationRoutes = require('./modules/integration/integration.routes');
 const toolRoutes = require('./modules/tool/tool.routes');
 const webCallRoutes = require('./modules/webcall/webcall.routes');
+const inboundRoutes = require('./modules/inbound/inbound.routes');
 
 const app = express();
 
@@ -27,6 +28,7 @@ app.use('/api/call', callRoutes);
 app.use('/api/integration', integrationRoutes);
 app.use('/api/tool', toolRoutes);
 app.use('/api/web-call', webCallRoutes);
+app.use('/api/inbound',  inboundRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
