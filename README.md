@@ -151,6 +151,30 @@ Most endpoints require `user_id` in either query params or request body.
 - `PATCH /update/:id` - Update strategy (`user_id` in body).
 - `DELETE /delete/:id` - Delete strategy (`user_id` in query/body).
 
+### Analytics (`/api/analytics`)
+
+Authentication:
+- Uses `user_id` query parameter
+- Does not require `Authorization` header
+
+Endpoints:
+- `GET /dashboard?user_id=...` - Summary totals and period counts.
+- `GET /calls/by-assistant?user_id=...` - Call metrics grouped by assistant.
+- `GET /calls/by-phone-number?user_id=...` - Call metrics grouped by destination number.
+- `GET /calls/by-time?user_id=...` - Time-series metrics (`granularity=day|week|month`).
+- `GET /calls/by-service?user_id=...` - Call metrics grouped by service.
+
+Supported query params:
+- Common: `start_date`, `end_date`
+- By phone number: `assistant_id`
+- By time: `assistant_id`, `granularity`
+
+Example:
+
+```bash
+curl -X GET "http://localhost:3000/api/analytics/dashboard?user_id=YOUR_USER_ID&start_date=2026-03-01T00:00:00Z&end_date=2026-03-28T23:59:59Z"
+```
+
 ## ID Usage Notes
 
 For several modules (assistant, sip, tool, inbound, strategy), APIs accept either:
@@ -172,6 +196,10 @@ INTVyom_Backend/
     ├── config/
     │   └── db.js
     └── modules/
+        ├── analytics/
+        │   ├── analytics.controller.js
+        │   ├── analytics.routes.js
+        │   └── analytics.service.js
         ├── auth/
         │   ├── auth.controller.js
         │   ├── auth.routes.js
