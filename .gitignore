@@ -29,3 +29,5 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+.codex

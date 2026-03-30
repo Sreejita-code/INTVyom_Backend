@@ -26,10 +26,10 @@ const createAssistant = async (data) => {
   if (!user) throw new Error('User not found');
   if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
 
-  // 2. Fetch Third-Party Integration API Key (Sarvam / Cartesia)
+  // 2. Fetch Third-Party Integration API Key (Sarvam / Cartesia / ElevenLabs / Mistral)
   let final_tts_config = { ...assistant_tts_config }; 
 
-  if (['sarvam', 'cartesia', 'elevenlabs'].includes(assistant_tts_model?.toLowerCase())) { 
+  if (['sarvam', 'cartesia', 'elevenlabs', 'mistral'].includes(assistant_tts_model?.toLowerCase())) { 
     const integration = await Integration.findOne({
       user_id: user._id,
       service_name: assistant_tts_model.toLowerCase()
@@ -164,7 +164,7 @@ const updateAssistant = async (userId, assistantId, updateData) => {
       if (existingAssistant) modelToCheck = existingAssistant.model;
     }
 
-    if (['sarvam', 'cartesia', 'elevenlabs'].includes(modelToCheck?.toLowerCase())) {
+    if (['sarvam', 'cartesia', 'elevenlabs', 'mistral'].includes(modelToCheck?.toLowerCase())) {
       const integration = await Integration.findOne({ 
         user_id: user._id, 
         service_name: modelToCheck.toLowerCase() 

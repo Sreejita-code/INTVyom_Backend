@@ -33,7 +33,7 @@ MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/intvyom?retryWrites=
 
 Notes:
 - Runtime code directly reads only `PORT` and `MONGO_URI`.
-- Provider keys (for services like Sarvam/Cartesia/ElevenLabs) are stored through integration APIs, not read from process env.
+- Provider keys (for services like Sarvam/Cartesia/ElevenLabs/Mistral) are stored through integration APIs, not read from process env.
 
 ## Run Locally
 
