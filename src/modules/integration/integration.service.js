@@ -9,16 +9,21 @@ const storeApiKey = async (data) => {
   const user = await User.findById(user_id);
   if (!user) throw new Error('User not found');
 
+  const normalizedServiceName = service_name.toLowerCase();
+  const normalizedServiceType = service_type
+    ? service_type.toUpperCase()
+    : (normalizedServiceName === 'gemini' ? 'LLM' : 'TTS');
+
   // We use findOneAndUpdate with upsert: true. 
   // If a key for this user + service_name exists, it updates it. If not, it creates it.
   const integration = await Integration.findOneAndUpdate(
     { 
       user_id: user._id, 
-      service_name: service_name.toLowerCase() 
+      service_name: normalizedServiceName 
     },
     { 
       $set: { 
-        service_type: service_type || 'TTS', 
+        service_type: normalizedServiceType, 
         api_key: api_key 
       } 
     },

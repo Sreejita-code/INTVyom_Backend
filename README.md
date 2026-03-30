@@ -105,6 +105,19 @@ Most endpoints require `user_id` in either query params or request body.
 - `DELETE /delete/:id` - Delete assistant (`user_id` in query/body).
 - `GET /call-logs/:id?user_id=...` - Assistant call logs.
 
+Mode-aware fields for create/update:
+- `assistant_llm_mode`: `pipeline` (default) or `realtime`.
+- `assistant_llm_config`: Realtime config object (used when mode is `realtime`).
+- `assistant_tts_model` and `assistant_tts_config`: Pipeline TTS fields (used when mode is `pipeline`).
+
+Realtime mode behavior:
+- `assistant_llm_config.provider = gemini` key resolution order:
+  1. `assistant_llm_config.api_key` from request
+  2. Integration key with `service_name=gemini`
+  3. Error if neither is available
+- `assistant_interaction_config.filler_words` is always forced to `false`.
+- Pipeline-only TTS fields are ignored/stripped when sending realtime updates.
+
 ### SIP (`/api/sip`)
 
 - `POST /create-outbound-trunk` - Create SIP trunk.

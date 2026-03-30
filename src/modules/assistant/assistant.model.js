@@ -9,8 +9,14 @@ const AssistantSchema = new mongoose.Schema({
   external_assistant_id: { type: String, required: true },
   name: { type: String, required: true },
   description: { type: String, required: true }, // Made required as per schema
-  model: { type: String, required: true }, 
-  config: { type: Object, required: true },      // Made required as per schema
+  llm_mode: {
+    type: String,
+    enum: ['pipeline', 'realtime'],
+    default: 'pipeline'
+  },
+  llm_config: { type: Object },
+  model: { type: String },
+  config: { type: Object },
   prompt: { type: String, required: true },      // Made required as per schema
   start_instruction: { type: String },           // Optional
   
