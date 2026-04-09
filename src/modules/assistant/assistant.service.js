@@ -458,11 +458,182 @@ const getCallLogs = async (userId, assistantId, queryParams) => {
   }
 };
 
+// --- 7. Get Total Billable Minutes ---
+const getTotalBillableDuration = async (userId, assistantId, queryParams) => {
+  const user = await User.findById(userId);
+  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+
+  // Find the assistant
+  const assistant = await Assistant.findOne({
+    $or: [
+      { _id: assistantId.match(/^[0-9a-fA-F]{24}$/) ? assistantId : null },
+      { external_assistant_id: assistantId }
+    ],
+    user_id: userId
+  });
+
+  if (!assistant) throw new Error('Assistant not found');
+
+  const targetNumber = queryParams.to_number;
+  if (!targetNumber) throw new Error('to_number is required to calculate billable minutes');
+
+  let totalBillableMinutes = 0;
+  let currentPage = 1;
+  let totalPages = 1;
+
+  const agent = new https.Agent({ rejectUnauthorized: false });
+
+  // Loop through all paginated results to ensure we sum up everything accurately
+  do {
+    // We only pass start_date, end_date to external API, along with page/limit
+    const apiParams = {
+      page: currentPage,
+      limit: 100, // Fetch maximum per page to reduce the number of external API calls
+    };
+    
+    if (queryParams.start_date) apiParams.start_date = queryParams.start_date;
+    if (queryParams.end_date) apiParams.end_date = queryParams.end_date;
+
+    const response = await axios.get(
+      `https://api-livekit-vyom.indusnettechnologies.com/assistant/call-logs/${assistant.external_assistant_id}`,
+      {
+        headers: { 'Authorization': `Bearer ${user.api_key}` },
+        params: apiParams,
+        httpsAgent: agent
+      }
+    );
+
+    const callLogsData = response.data?.data;
+    
+    if (callLogsData && callLogsData.logs) {
+      // Filter logs by the specific to_number and sum up billable_duration_minutes
+      const filteredLogs = callLogsData.logs.filter(log => log.to_number === targetNumber);
+      
+      for (const log of filteredLogs) {
+        totalBillableMinutes += (log.billable_duration_minutes || 0);
+      }
+      
+      // Update totalPages based on external API pagination metadata
+      totalPages = callLogsData.pagination?.total_pages || 1;
+    } else {
+      break; // Exit if no data is found
+    }
+    
+    currentPage++;
+  } while (currentPage <= totalPages);
+
+  return {
+    success: true,
+    message: "Total billable minutes calculated successfully",
+    data: {
+      assistant_id: assistant.external_assistant_id,
+      to_number: targetNumber,
+      total_billable_duration_minutes: totalBillableMinutes,
+      timespan_evaluated: {
+        start_date: queryParams.start_date || 'lifetime',
+        end_date: queryParams.end_date || 'lifetime'
+      }
+    }
+  };
+};
+
+// --- 8. Get Platform-Wise Billable Minutes For All Assistants ---
+const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
+  const user = await User.findById(userId);
+  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+
+  // Find all assistants for this user from the local DB
+  const assistants = await Assistant.find({ user_id: user._id });
+  
+  if (!assistants || assistants.length === 0) {
+    return {
+      success: true,
+      message: "No assistants found for this user",
+      data: { platform_wise_minutes: [] }
+    };
+  }
+
+  const platformBillableMap = {};
+  const agent = new https.Agent({ rejectUnauthorized: false });
+
+  // Loop through all assistants
+  for (const assistant of assistants) {
+    let currentPage = 1;
+    let totalPages = 1;
+
+    // Loop through paginated call logs for the current assistant
+    do {
+      const apiParams = {
+        page: currentPage,
+        limit: 100 // Maximum limit to reduce API calls
+      };
+      
+      if (queryParams.start_date) apiParams.start_date = queryParams.start_date;
+      if (queryParams.end_date) apiParams.end_date = queryParams.end_date;
+
+      try {
+        const response = await axios.get(
+          `https://api-livekit-vyom.indusnettechnologies.com/assistant/call-logs/${assistant.external_assistant_id}`,
+          {
+            headers: { 'Authorization': `Bearer ${user.api_key}` },
+            params: apiParams,
+            httpsAgent: agent
+          }
+        );
+
+        const callLogsData = response.data?.data;
+        
+        if (callLogsData && callLogsData.logs) {
+          // Aggregate by platform_number
+          for (const log of callLogsData.logs) {
+            const pNumber = log.platform_number || 'Unknown Platform';
+            const mins = log.billable_duration_minutes || 0;
+            
+            if (!platformBillableMap[pNumber]) {
+              platformBillableMap[pNumber] = 0;
+            }
+            platformBillableMap[pNumber] += mins;
+          }
+          
+          totalPages = callLogsData.pagination?.total_pages || 1;
+        } else {
+          break; // Exit if no logs found
+        }
+      } catch (error) {
+        console.error(`Failed to fetch logs for assistant ${assistant.external_assistant_id}:`, error.response?.data?.message || error.message);
+        break; // Break the while loop to skip to the next assistant on error
+      }
+      
+      currentPage++;
+    } while (currentPage <= totalPages);
+  }
+
+  // Format the map into a clean array
+  const aggregatedData = Object.keys(platformBillableMap).map(platform_number => ({
+    platform_number,
+    total_billable_minutes: platformBillableMap[platform_number]
+  }));
+
+  return {
+    success: true,
+    message: "Platform-wise billable minutes calculated successfully",
+    data: {
+      platform_wise_minutes: aggregatedData,
+      timespan_evaluated: {
+        start_date: queryParams.start_date || 'lifetime',
+        end_date: queryParams.end_date || 'lifetime'
+      }
+    }
+  };
+};
+
 module.exports = {
   createAssistant,
   listAssistants,
   getAssistantDetails,
   updateAssistant,
   deleteAssistant,
-  getCallLogs 
+  getCallLogs,
+  getTotalBillableDuration,
+  getPlatformWiseBillableMinutes 
 };

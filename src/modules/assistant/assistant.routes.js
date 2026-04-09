@@ -14,4 +14,13 @@ router.patch('/update/:id', assistantController.update);
 router.delete('/delete/:id', assistantController.deleteAssistant);
 router.get('/call-logs/:id', assistantController.getCallLogs);
 
+// Add this under your existing routes
+router.get('/billable-minutes/:id', assistantController.getBillableMinutes);
+
+// Add this route
+router.get('/platform-billable-minutes', assistantController.getPlatformWiseBillableMinutes);
+
+// Add this route near your other newly added routes
+router.get('/platform-billable-minutes/download', assistantController.downloadPlatformWiseBillableMinutes);
+
 module.exports = router;

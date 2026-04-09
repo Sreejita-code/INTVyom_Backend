@@ -1,4 +1,5 @@
 const assistantService = require('./assistant.service');
+const excel = require('exceljs');
 
 // --- 1. Create Controller (Existing) ---
 const create = async (req, res) => {
@@ -136,11 +137,134 @@ const getCallLogs = async (req, res) => {
   }
 };
 
+// --- 7. Get Billable Minutes Controller (New) ---
+const getBillableMinutes = async (req, res) => {
+  try {
+    const { id } = req.params; // The assistant ID
+    const { 
+      user_id, 
+      to_number,
+      start_date, 
+      end_date 
+    } = req.query;
+
+    if (!user_id || !id) {
+      return res.status(400).json({ error: 'user_id and assistant id are required' });
+    }
+    
+    if (!to_number) {
+      return res.status(400).json({ error: 'to_number query parameter is required' });
+    }
+
+    const queryParams = { to_number };
+    if (start_date) queryParams.start_date = start_date;
+    if (end_date) queryParams.end_date = end_date;
+
+    const result = await assistantService.getTotalBillableDuration(user_id, id, queryParams);
+    
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// --- 8. Get Platform Wise Billable Minutes Controller ---
+const getPlatformWiseBillableMinutes = async (req, res) => {
+  try {
+    const { user_id, start_date, end_date } = req.query;
+
+    if (!user_id) {
+      return res.status(400).json({ error: 'user_id query parameter is required' });
+    }
+
+    const queryParams = {};
+    if (start_date) queryParams.start_date = start_date;
+    if (end_date) queryParams.end_date = end_date;
+
+    const result = await assistantService.getPlatformWiseBillableMinutes(user_id, queryParams);
+    
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// --- 9. Download Platform Wise Billable Minutes Controller ---
+const downloadPlatformWiseBillableMinutes = async (req, res) => {
+  try {
+    const { user_id, start_date, end_date } = req.query;
+
+    if (!user_id) {
+      return res.status(400).json({ error: 'user_id query parameter is required' });
+    }
+
+    const queryParams = {};
+    if (start_date) queryParams.start_date = start_date;
+    if (end_date) queryParams.end_date = end_date;
+
+    // Fetch the aggregated data using the service we already built
+    const result = await assistantService.getPlatformWiseBillableMinutes(user_id, queryParams);
+
+    if (!result.success || !result.data || !result.data.platform_wise_minutes) {
+      return res.status(400).json({ error: 'Failed to retrieve data for export' });
+    }
+
+    const data = result.data.platform_wise_minutes;
+    const evalStartDate = result.data.timespan_evaluated.start_date;
+    const evalEndDate = result.data.timespan_evaluated.end_date;
+
+    // Create a new Excel workbook and worksheet
+    const workbook = new excel.Workbook();
+    const worksheet = workbook.addWorksheet('Billable Minutes');
+
+    // Define the columns requested
+    worksheet.columns = [
+      { header: 'Start Date', key: 'start_date', width: 20 },
+      { header: 'End Date', key: 'end_date', width: 20 },
+      { header: 'Phone Numbers', key: 'phone_numbers', width: 25 },
+      { header: 'Billable Minutes', key: 'billable_minutes', width: 20 }
+    ];
+
+    // Add styling to headers (optional, makes it look nicer)
+    worksheet.getRow(1).font = { bold: true };
+
+    // Add rows from the aggregated data
+    data.forEach(item => {
+      worksheet.addRow({
+        start_date: evalStartDate === 'lifetime' ? 'Lifetime' : evalStartDate,
+        end_date: evalEndDate === 'lifetime' ? 'Lifetime' : evalEndDate,
+        phone_numbers: item.platform_number,
+        billable_minutes: item.total_billable_minutes
+      });
+    });
+
+    // Set response headers to trigger file download in the browser
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename=' + `platform_billable_minutes.xlsx`
+    );
+
+    // Write the workbook to the response stream
+    await workbook.xlsx.write(res);
+    res.status(200).end();
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   create,
   list,
   details,
   update,
   deleteAssistant, // Export the new function
-  getCallLogs
+  getCallLogs,
+  getBillableMinutes,
+  getPlatformWiseBillableMinutes,
+  downloadPlatformWiseBillableMinutes
 };
