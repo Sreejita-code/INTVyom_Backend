@@ -18,13 +18,20 @@ const create = async (req, res) => {
 // --- 2. List Controller (Existing) ---
 const list = async (req, res) => {
   try {
-    const { user_id } = req.query;
+    // Extract page and limit along with user_id
+    const { user_id, page, limit } = req.query;
 
     if (!user_id) {
       return res.status(400).json({ error: 'user_id query parameter is required' });
     }
 
-    const result = await assistantService.listAssistants(user_id);
+    // Build a query parameters object
+    const queryParams = {};
+    if (page) queryParams.page = page;
+    if (limit) queryParams.limit = limit;
+
+    // Pass the queryParams to the service
+    const result = await assistantService.listAssistants(user_id, queryParams);
     res.status(200).json(result);
 
   } catch (error) {

@@ -211,7 +211,7 @@ const createAssistant = async (data) => {
 };
 
 // --- 2. List Assistants (Existing) ---
-const listAssistants = async (userId) => {
+const listAssistants = async (userId, queryParams = {}) => { // Add queryParams as an argument
   const user = await User.findById(userId);
   if (!user) throw new Error('User not found');
   if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
@@ -222,6 +222,7 @@ const listAssistants = async (userId) => {
       'https://api-livekit-vyom.indusnettechnologies.com/assistant/list',
       {
         headers: { 'Authorization': `Bearer ${user.api_key}` },
+        params: queryParams, // <-- Pass the parameters to the external API here
         httpsAgent: agent
       }
     );
