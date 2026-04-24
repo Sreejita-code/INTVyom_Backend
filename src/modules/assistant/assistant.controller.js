@@ -16,6 +16,7 @@ const create = async (req, res) => {
 };
 
 // --- 2. List Controller (Existing) ---
+// --- 2. List Controller (Updated) ---
 const list = async (req, res) => {
   try {
     // Extract page and limit along with user_id
@@ -27,8 +28,10 @@ const list = async (req, res) => {
 
     // Build a query parameters object
     const queryParams = {};
-    if (page) queryParams.page = page;
-    if (limit) queryParams.limit = limit;
+    if (page) queryParams.page = parseInt(page, 10);
+    
+    // FIX: Set a safe maximum limit of 100 instead of 1000 to prevent API crashes
+    queryParams.limit = limit ? parseInt(limit, 10) : 100;
 
     // Pass the queryParams to the service
     const result = await assistantService.listAssistants(user_id, queryParams);
