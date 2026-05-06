@@ -12,7 +12,9 @@ const SipTrunkSchema = new mongoose.Schema({
   
   // Mixed type allows storing either Twilio's config (address, numbers, username, password) 
   // or Exotel's config (exotel_number) flexibly in the same column
-  trunk_config: { type: mongoose.Schema.Types.Mixed, required: true } 
+  trunk_config: { type: mongoose.Schema.Types.Mixed, required: true },
+  passthrough_mode: { type: Boolean, default: false },
+  passthrough_webhook_url: { type: String }
 }, { timestamps: true });
 
 module.exports = mongoose.model('SipTrunk', SipTrunkSchema);

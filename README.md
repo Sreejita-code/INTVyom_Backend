@@ -120,7 +120,7 @@ Realtime mode behavior:
 
 ### SIP (`/api/sip`)
 
-- `POST /create-outbound-trunk` - Create SIP trunk.
+- `POST /create-outbound-trunk` - Create SIP trunk. Pass `passthrough_mode: true` to create a passthrough-only trunk. Optionally pass `passthrough_webhook_url` to receive end-of-call notifications.
 - `GET /list?user_id=...` - List SIP trunks.
 - `GET /details/:id?user_id=...` - SIP trunk details.
 - `DELETE /delete/:id` - Delete SIP trunk (`user_id` in query/body).
@@ -146,7 +146,16 @@ Realtime mode behavior:
 
 ### Web Call (`/api/web-call`)
 
-- `POST /get-token` - Generate web call token.
+- `POST /get-token` - Generate web call token (AI agent call). Body: `user_id`, `assistant_id`, `metadata?`.
+
+### Passthrough Call (`/api/passthrough-call`)
+
+Human web-to-SIP calls with no AI agent. Web browser speaks directly to phone caller over SIP — no STT, LLM, or TTS involved.
+
+Prerequisites: a SIP trunk created with `passthrough_mode: true`.
+
+- `POST /passthrough-outbound` - Trigger passthrough call. Body: `user_id`, `trunk_id`, `to_number`, `metadata?`. Returns `room_token` (use with LiveKit JS/React SDK to connect browser), `room_name`, `queue_id`, `status`.
+- `GET /call-records?user_id=...` - List passthrough call records. Optional filters: `to_number`, `call_status`, `start_date`, `end_date`, `limit`, `offset`.
 
 ### Inbound (`/api/inbound`)
 
@@ -252,10 +261,14 @@ INTVyom_Backend/
         │   ├── tool.model.js
         │   ├── tool.routes.js
         │   └── tool.service.js
-        └── webcall/
-            ├── webcall.controller.js
-            ├── webcall.routes.js
-            └── webcall.service.js
+        ├── webcall/
+        │   ├── webcall.controller.js
+        │   ├── webcall.routes.js
+        │   └── webcall.service.js
+        └── passthrough_call/
+            ├── passthrough.controller.js
+            ├── passthrough.routes.js
+            └── passthrough.sevice.js
 ```
 
 ## Scripts

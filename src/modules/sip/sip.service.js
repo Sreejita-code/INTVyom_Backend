@@ -4,7 +4,7 @@ const SipTrunk = require('./sip.model');
 const User = require('../auth/user.model'); 
 
 const createOutboundTrunk = async (data) => {
-  const { user_id, trunk_name, trunk_type, trunk_config } = data;
+  const { user_id, trunk_name, trunk_type, trunk_config, passthrough_mode, passthrough_webhook_url } = data;
 
   const user = await User.findById(user_id);
   if (!user) throw new Error('User not found');
@@ -17,7 +17,9 @@ const createOutboundTrunk = async (data) => {
   const externalPayload = {
     trunk_name,
     trunk_type: trunk_type.toLowerCase(),
-    trunk_config
+    trunk_config,
+    ...(passthrough_mode && { passthrough_mode: true }),
+    ...(passthrough_webhook_url && { passthrough_webhook_url })
   };
 
   let externalResponseData = null;
@@ -46,7 +48,9 @@ const createOutboundTrunk = async (data) => {
     external_trunk_id: externalResponseData.data.trunk_id,
     trunk_name,
     trunk_type,
-    trunk_config
+    trunk_config,
+    ...(passthrough_mode && { passthrough_mode: true }),
+    ...(passthrough_webhook_url && { passthrough_webhook_url })
   });
 
   return await newSipTrunk.save();

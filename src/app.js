@@ -11,6 +11,7 @@ const toolRoutes = require('./modules/tool/tool.routes');
 const webCallRoutes = require('./modules/webcall/webcall.routes');
 const inboundRoutes = require('./modules/inbound/inbound.routes');
 const analyticsRoutes = require('./modules/analytics/analytics.routes');
+const passthroughRoutes = require('./modules/passthrough_call/passthrough.routes');
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use('/api/web-call', webCallRoutes);
 app.use('/api/inbound',  inboundRoutes);
 app.use('/api/inbound-context-strategy', require('./modules/inbound-context-strategy/inbound-context-strategy.routes'));
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/passthrough-call', passthroughRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
