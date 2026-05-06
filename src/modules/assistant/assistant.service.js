@@ -58,17 +58,20 @@ const buildRealtimeLlmConfig = async ({ userId, llmConfig }) => {
   }
   const provider = String(finalLlmConfig.provider).toLowerCase();
 
-  if (provider === 'gemini') {
+  // UPDATED: Support fetching both gemini and openai keys from Integrations
+  const supportedIntegrations = ['gemini', 'openai'];
+
+  if (supportedIntegrations.includes(provider)) {
     const hasPerAssistantKey = typeof finalLlmConfig.api_key === 'string' && finalLlmConfig.api_key.trim() !== '';
 
     if (!hasPerAssistantKey) {
       const integration = await Integration.findOne({
         user_id: userId,
-        service_name: 'gemini'
+        service_name: provider // Dynamically looks up 'gemini' or 'openai'
       });
 
       if (!integration || !integration.api_key) {
-        throw new Error('Integration required: Please integrate your gemini API key in the Integrations module first.');
+        throw new Error(`Integration required: Please integrate your ${provider} API key in the Integrations module first.`);
       }
 
       finalLlmConfig.api_key = integration.api_key;
@@ -118,10 +121,10 @@ const createAssistant = async (data) => {
     assistant_tts_model, 
     assistant_tts_config,
     assistant_start_instruction,
-    assistant_interaction_config,          // NEW: Interaction config object
-    assistant_end_call_enabled,            // NEW: Boolean to enable end call tool
-    assistant_end_call_trigger_phrase,     // NEW: Trigger phrase string
-    assistant_end_call_agent_message,      // NEW: Agent message before ending call
+    assistant_interaction_config,          
+    assistant_end_call_enabled,            
+    assistant_end_call_trigger_phrase,     
+    assistant_end_call_agent_message,      
     assistant_end_call_url 
   } = data;
 
@@ -197,7 +200,7 @@ const createAssistant = async (data) => {
     llm_mode: mode,
     llm_config: assistant_llm_config,
     model: assistant_tts_model,
-    config: assistant_tts_config, // Keep original config locally, without the fetched secret key
+    config: assistant_tts_config, 
     prompt: assistant_prompt,
     start_instruction: assistant_start_instruction, 
     interaction_config: interactionConfig,
@@ -211,7 +214,7 @@ const createAssistant = async (data) => {
 };
 
 // --- 2. List Assistants (Existing) ---
-const listAssistants = async (userId, queryParams = {}) => { // Add queryParams as an argument
+const listAssistants = async (userId, queryParams = {}) => { 
   const user = await User.findById(userId);
   if (!user) throw new Error('User not found');
   if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
@@ -222,7 +225,7 @@ const listAssistants = async (userId, queryParams = {}) => { // Add queryParams 
       'https://api-livekit-vyom.indusnettechnologies.com/assistant/list',
       {
         headers: { 'Authorization': `Bearer ${user.api_key}` },
-        params: queryParams, // <-- Pass the parameters to the external API here
+        params: queryParams, 
         httpsAgent: agent
       }
     );
