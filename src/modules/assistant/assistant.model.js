@@ -32,6 +32,7 @@ const AssistantSchema = new mongoose.Schema({
     preferred_languages: { type: [String], default: [] }         // New
   },
   
+  greeting_audio: { type: Object },
   end_call_enabled: { type: Boolean, default: false },
   end_call_trigger_phrase: { type: String },
   end_call_agent_message: { type: String },

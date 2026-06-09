@@ -125,7 +125,8 @@ const createAssistant = async (data) => {
     assistant_end_call_enabled,            
     assistant_end_call_trigger_phrase,     
     assistant_end_call_agent_message,      
-    assistant_end_call_url 
+    assistant_end_call_url,
+    assistant_greeting_audio 
   } = data;
 
   // 1. Validate User
@@ -168,6 +169,7 @@ const createAssistant = async (data) => {
   if (assistant_end_call_trigger_phrase) externalPayload.assistant_end_call_trigger_phrase = assistant_end_call_trigger_phrase;
   if (assistant_end_call_agent_message) externalPayload.assistant_end_call_agent_message = assistant_end_call_agent_message;
   if (assistant_end_call_url) externalPayload.assistant_end_call_url = assistant_end_call_url;
+  if (assistant_greeting_audio) externalPayload.assistant_greeting_audio = assistant_greeting_audio;
 
   let externalResponseData = null;
 
@@ -207,7 +209,8 @@ const createAssistant = async (data) => {
     end_call_enabled: assistant_end_call_enabled,
     end_call_trigger_phrase: assistant_end_call_trigger_phrase,
     end_call_agent_message: assistant_end_call_agent_message,
-    end_call_url: assistant_end_call_url
+    end_call_url: assistant_end_call_url,
+    greeting_audio: assistant_greeting_audio
   });
 
   return await newAssistant.save();
@@ -376,6 +379,7 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   if (updateData.assistant_end_call_trigger_phrase !== undefined) localUpdateFields.end_call_trigger_phrase = updateData.assistant_end_call_trigger_phrase;
   if (updateData.assistant_end_call_agent_message !== undefined) localUpdateFields.end_call_agent_message = updateData.assistant_end_call_agent_message;
   if (updateData.assistant_end_call_url !== undefined) localUpdateFields.end_call_url = updateData.assistant_end_call_url;
+  if (updateData.assistant_greeting_audio !== undefined) localUpdateFields.greeting_audio = updateData.assistant_greeting_audio;
 
   const updatedAssistant = await Assistant.findOneAndUpdate(
     { external_assistant_id: assistantId }, 

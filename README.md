@@ -105,6 +105,9 @@ Most endpoints require `user_id` in either query params or request body.
 - `DELETE /delete/:id` - Delete assistant (`user_id` in query/body).
 - `GET /call-logs/:id?user_id=...` - Assistant call logs.
 
+Additional fields for create/update:
+- `assistant_greeting_audio`: Object `{ "enabled": bool, "audio_id": string }`. When enabled and `interaction_config.speaks_first=true`, plays the prerecorded clip instead of a model-generated greeting.
+
 Mode-aware fields for create/update:
 - `assistant_llm_mode`: `pipeline` (default) or `realtime`.
 - `assistant_llm_config`: Realtime config object (used when mode is `realtime`).
