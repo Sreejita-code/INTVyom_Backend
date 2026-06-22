@@ -94,7 +94,7 @@ const getApiKeyByUserName = async (userName) => {
   const user = await User.findOne({ user_name: userName });
   if (!user) throw new Error('User not found');
   if (!user.api_key) throw new Error('No API key found for this user');
-  return user.api_key;
+  return { user_id: user._id, api_key: user.api_key };
 };
 
 // --- 3. Login User ---

@@ -29,11 +29,12 @@ const getApiKey = async (req, res) => {
       return res.status(400).json({ error: 'user_name parameter is required' });
     }
 
-    const apiKey = await authService.getApiKeyByUserName(user_name);
+    const { user_id, api_key } = await authService.getApiKeyByUserName(user_name);
 
     res.status(200).json({
-      user_name: user_name,
-      api_key: apiKey
+      user_id,
+      user_name,
+      api_key
     });
 
   } catch (error) {
