@@ -1,14 +1,8 @@
-const axios = require('axios');
-const https = require('https');
 const FormData = require('form-data');
-const User = require('../auth/user.model');
-
-const getAgent = () => new https.Agent({ rejectUnauthorized: false });
+const { callExternal, getUserWithKey } = require('../shared/remote');
 
 const uploadAudio = async (userId, { file, audio_name, transcript }) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key.');
+  const user = await getUserWithKey(userId);
 
   const form = new FormData();
   form.append('file', file.buffer, {
@@ -18,86 +12,27 @@ const uploadAudio = async (userId, { file, audio_name, transcript }) => {
   form.append('audio_name', audio_name);
   form.append('transcript', transcript);
 
-  try {
-    const response = await axios.post(
-      'https://api-livekit-vyom.indusnettechnologies.com/audio/upload',
-      form,
-      {
-        headers: {
-          ...form.getHeaders(),
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) {
-      throw new Error(error.response.data.message || 'External API Error');
-    }
-    throw new Error('Failed to contact external service');
-  }
+  return callExternal(user.api_key, {
+    method: 'post',
+    path: '/audio/upload',
+    data: form,
+    headers: form.getHeaders(),
+  });
 };
 
 const listAudio = async (userId, { page, limit }) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key.');
-
-  try {
-    const response = await axios.get(
-      'https://api-livekit-vyom.indusnettechnologies.com/audio/list',
-      {
-        params: { page, limit },
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'External API Error');
-    throw new Error('Failed to contact external service');
-  }
+  const user = await getUserWithKey(userId);
+  return callExternal(user.api_key, { path: '/audio/list', params: { page, limit } });
 };
 
 const getAudioDetails = async (userId, audioId) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key.');
-
-  try {
-    const response = await axios.get(
-      `https://api-livekit-vyom.indusnettechnologies.com/audio/${audioId}`,
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'External API Error');
-    throw new Error('Failed to contact external service');
-  }
+  const user = await getUserWithKey(userId);
+  return callExternal(user.api_key, { path: `/audio/${audioId}` });
 };
 
 const deleteAudio = async (userId, audioId) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key.');
-
-  try {
-    const response = await axios.delete(
-      `https://api-livekit-vyom.indusnettechnologies.com/audio/${audioId}`,
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'External API Error');
-    throw new Error('Failed to contact external service');
-  }
+  const user = await getUserWithKey(userId);
+  return callExternal(user.api_key, { method: 'delete', path: `/audio/${audioId}` });
 };
 
 module.exports = { uploadAudio, listAudio, getAudioDetails, deleteAudio };

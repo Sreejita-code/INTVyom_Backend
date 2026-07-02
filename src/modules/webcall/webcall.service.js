@@ -1,27 +1,16 @@
-const axios = require('axios');
-const https = require('https');
-const User = require('../auth/user.model');
 const Assistant = require('../assistant/assistant.model');
+const { callExternal, getUserWithKey, findByLocalOrExternalId } = require('../shared/remote');
 
 const generateWebCallToken = async (data) => {
   console.log("=== [WebCall Service] Processing Token Request ===");
-  
+
   const { user_id, assistant_id, metadata, text_only } = data;
 
   // 1. Validate User & API Key
-  const user = await User.findById(user_id);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+  const user = await getUserWithKey(user_id);
 
   // 2. Resolve Assistant ID
-  const assistant = await Assistant.findOne({
-    $or: [
-      { _id: assistant_id.match(/^[0-9a-fA-F]{24}$/) ? assistant_id : null },
-      { external_assistant_id: assistant_id }
-    ],
-    user_id: user._id
-  });
-
+  const assistant = await findByLocalOrExternalId(Assistant, assistant_id, user._id, 'external_assistant_id');
   if (!assistant) {
     throw new Error('Assistant not found for this user');
   }
@@ -40,34 +29,16 @@ const generateWebCallToken = async (data) => {
     console.log("[WebCall Service] Standard Voice Web Call detected (text_only is absent or false).");
   }
 
-  // --- ADDED LOGGING ---
   console.log("[WebCall Service] Final Payload sending to External API:", JSON.stringify(externalPayload, null, 2));
-  // ---------------------
 
   // 5. Hit the External API
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
-    const response = await axios.post(
-      'https://api-livekit-vyom.indusnettechnologies.com/web_call/get_token',
-      externalPayload,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: agent
-      }
-    );
-
-    console.log("[WebCall Service] External API Success! Token received.");
-    return response.data;
-  } catch (error) {
-    console.error("[WebCall Service] External API Error Details:", error.response?.data || error.message);
-    if (error.response) {
-      throw new Error(error.response.data.message || 'External API Error while generating token');
-    }
-    throw new Error('Failed to contact external web call service');
-  }
+  return callExternal(user.api_key, {
+    method: 'post',
+    path: '/web_call/get_token',
+    data: externalPayload,
+    fallback: 'External API Error while generating token',
+    networkFallback: 'Failed to contact external web call service',
+  });
 };
 
 module.exports = {

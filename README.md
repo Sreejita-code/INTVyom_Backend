@@ -254,6 +254,8 @@ INTVyom_Backend/
         │   ├── integration.model.js
         │   ├── integration.routes.js
         │   └── integration.service.js
+        ├── shared/
+        │   └── remote.js          # callExternal, getUserWithKey, findByLocalOrExternalId (used by all modules)
         ├── sip/
         │   ├── sip.controller.js
         │   ├── sip.model.js

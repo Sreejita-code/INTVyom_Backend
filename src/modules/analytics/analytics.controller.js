@@ -25,85 +25,24 @@ const handleAnalyticsRequest = async (res, fetcher) => {
   }
 };
 
-const getUserId = (req) => req.query.user_id;
-
-const validateUserId = (userId, res) => {
-  if (!userId) {
-    res.status(400).json({ error: 'user_id query parameter is required' });
-    return false;
-  }
-  return true;
+// Each handler differs only by external path + which query params it forwards.
+const ROUTES = {
+  dashboard:     ['/dashboard',             ['start_date', 'end_date']],
+  byAssistant:   ['/calls/by-assistant',    ['start_date', 'end_date']],
+  byPhoneNumber: ['/calls/by-phone-number', ['start_date', 'end_date', 'assistant_id']],
+  byTime:        ['/calls/by-time',         ['start_date', 'end_date', 'granularity', 'assistant_id']],
+  byService:     ['/calls/by-service',      ['start_date', 'end_date']],
 };
 
-const dashboard = async (req, res) => {
-  const userId = getUserId(req);
-  if (!validateUserId(userId, res)) return;
+const makeHandler = ([path, keys]) => async (req, res) => {
+  const userId = req.query.user_id;
+  if (!userId) return res.status(400).json({ error: 'user_id query parameter is required' });
 
   return handleAnalyticsRequest(res, () =>
-    analyticsService.proxyAnalyticsRequest(
-      '/dashboard',
-      userId,
-      pickQueryParams(req.query, ['start_date', 'end_date'])
-    )
+    analyticsService.proxyAnalyticsRequest(path, userId, pickQueryParams(req.query, keys))
   );
 };
 
-const byAssistant = async (req, res) => {
-  const userId = getUserId(req);
-  if (!validateUserId(userId, res)) return;
-
-  return handleAnalyticsRequest(res, () =>
-    analyticsService.proxyAnalyticsRequest(
-      '/calls/by-assistant',
-      userId,
-      pickQueryParams(req.query, ['start_date', 'end_date'])
-    )
-  );
-};
-
-const byPhoneNumber = async (req, res) => {
-  const userId = getUserId(req);
-  if (!validateUserId(userId, res)) return;
-
-  return handleAnalyticsRequest(res, () =>
-    analyticsService.proxyAnalyticsRequest(
-      '/calls/by-phone-number',
-      userId,
-      pickQueryParams(req.query, ['start_date', 'end_date', 'assistant_id'])
-    )
-  );
-};
-
-const byTime = async (req, res) => {
-  const userId = getUserId(req);
-  if (!validateUserId(userId, res)) return;
-
-  return handleAnalyticsRequest(res, () =>
-    analyticsService.proxyAnalyticsRequest(
-      '/calls/by-time',
-      userId,
-      pickQueryParams(req.query, ['start_date', 'end_date', 'granularity', 'assistant_id'])
-    )
-  );
-};
-
-const byService = async (req, res) => {
-  const userId = getUserId(req);
-  if (!validateUserId(userId, res)) return;
-
-  return handleAnalyticsRequest(res, () =>
-    analyticsService.proxyAnalyticsRequest(
-      '/calls/by-service',
-      userId,
-      pickQueryParams(req.query, ['start_date', 'end_date'])
-    )
-  );
-};
-
-module.exports = {
-  dashboard,
-  byAssistant,
-  byPhoneNumber,
-  byTime,
-  byService
-};
+module.exports = Object.fromEntries(
+  Object.entries(ROUTES).map(([name, cfg]) => [name, makeHandler(cfg)])
+);

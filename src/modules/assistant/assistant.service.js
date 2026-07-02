@@ -1,8 +1,9 @@
 const axios = require('axios');
 const https = require('https');
 const Assistant = require('./assistant.model');
-const User = require('../auth/user.model'); 
+const User = require('../auth/user.model');
 const Integration = require('../integration/integration.model');
+const { callExternal, getUserWithKey, findByLocalOrExternalId } = require('../shared/remote');
 
 const TTS_INTEGRATION_MODELS = ['sarvam', 'cartesia', 'elevenlabs', 'mistral'];
 
@@ -130,9 +131,7 @@ const createAssistant = async (data) => {
   } = data;
 
   // 1. Validate User
-  const user = await User.findById(user_id);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+  const user = await getUserWithKey(user_id);
 
   const mode = normalizeMode(assistant_llm_mode, 'pipeline');
   const interactionConfig = sanitizeInteractionConfigForMode(assistant_interaction_config, mode);
@@ -171,27 +170,12 @@ const createAssistant = async (data) => {
   if (assistant_end_call_url) externalPayload.assistant_end_call_url = assistant_end_call_url;
   if (assistant_greeting_audio) externalPayload.assistant_greeting_audio = assistant_greeting_audio;
 
-  let externalResponseData = null;
-
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
-    const response = await axios.post(
-      'https://api-livekit-vyom.indusnettechnologies.com/assistant/create',
-      externalPayload,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: agent
-      }
-    );
-
-    externalResponseData = response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'External API Error');
-    throw new Error('Failed to contact external assistant service');
-  }
+  const externalResponseData = await callExternal(user.api_key, {
+    method: 'post',
+    path: '/assistant/create',
+    data: externalPayload,
+    networkFallback: 'Failed to contact external assistant service',
+  });
 
   // 4. Save to Local DB
   const newAssistant = new Assistant({
@@ -217,33 +201,18 @@ const createAssistant = async (data) => {
 };
 
 // --- 2. List Assistants (Existing) ---
-const listAssistants = async (userId, queryParams = {}) => { 
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
-
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
-    const response = await axios.get(
-      'https://api-livekit-vyom.indusnettechnologies.com/assistant/list',
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        params: queryParams, 
-        httpsAgent: agent
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to fetch assistants');
-    throw new Error('Failed to contact external service');
-  }
+const listAssistants = async (userId, queryParams = {}) => {
+  const user = await getUserWithKey(userId);
+  return callExternal(user.api_key, {
+    path: '/assistant/list',
+    params: queryParams,
+    fallback: 'Failed to fetch assistants',
+  });
 };
 
 // --- 3. Get Assistant Details (Existing) ---
 const getAssistantDetails = async (userId, assistantId) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+  const user = await getUserWithKey(userId);
 
   try {
     const agent = new https.Agent({ rejectUnauthorized: false });
@@ -266,9 +235,7 @@ const getAssistantDetails = async (userId, assistantId) => {
 
 // --- 4. Update Assistant ---
 const updateAssistant = async (userId, assistantId, updateData) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+  const user = await getUserWithKey(userId);
 
   const existingAssistant = await Assistant.findOne({ external_assistant_id: assistantId });
 
@@ -339,23 +306,12 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     }
   }
 
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
-    await axios.patch(
-      `https://api-livekit-vyom.indusnettechnologies.com/assistant/update/${assistantId}`,
-      externalUpdatePayload, 
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: agent
-      }
-    );
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to update assistant externally');
-    throw new Error('Failed to contact external service');
-  }
+  await callExternal(user.api_key, {
+    method: 'patch',
+    path: `/assistant/update/${assistantId}`,
+    data: externalUpdatePayload,
+    fallback: 'Failed to update assistant externally',
+  });
 
   // Use explicit undefined checks so boolean false isn't ignored
   const localUpdateFields = {};
@@ -397,29 +353,13 @@ const updateAssistant = async (userId, assistantId, updateData) => {
 
 // --- 5. Delete Assistant (Existing) ---
 const deleteAssistant = async (userId, assistantId) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+  const user = await getUserWithKey(userId);
 
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
-
-    await axios.delete(
-      `https://api-livekit-vyom.indusnettechnologies.com/assistant/delete/${assistantId}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: agent
-      }
-    );
-
-  } catch (error) {
-    if (error.response) {
-      throw new Error(error.response.data.message || 'Failed to delete assistant externally');
-    }
-    throw new Error('Failed to contact external service');
-  }
+  await callExternal(user.api_key, {
+    method: 'delete',
+    path: `/assistant/delete/${assistantId}`,
+    fallback: 'Failed to delete assistant externally',
+  });
 
   const deletedAssistant = await Assistant.findOneAndDelete({ external_assistant_id: assistantId });
 
@@ -433,17 +373,9 @@ const deleteAssistant = async (userId, assistantId) => {
 
 // --- 6. Get Call Logs ---
 const getCallLogs = async (userId, assistantId, queryParams) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+  const user = await getUserWithKey(userId);
 
-  const assistant = await Assistant.findOne({
-    $or: [
-      { _id: assistantId.match(/^[0-9a-fA-F]{24}$/) ? assistantId : null },
-      { external_assistant_id: assistantId }
-    ],
-    user_id: userId
-  });
-
+  const assistant = await findByLocalOrExternalId(Assistant, assistantId, userId, 'external_assistant_id');
   if (!assistant) throw new Error('Assistant not found');
 
   try {
@@ -468,18 +400,10 @@ const getCallLogs = async (userId, assistantId, queryParams) => {
 
 // --- 7. Get Total Billable Minutes ---
 const getTotalBillableDuration = async (userId, assistantId, queryParams) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+  const user = await getUserWithKey(userId);
 
   // Find the assistant
-  const assistant = await Assistant.findOne({
-    $or: [
-      { _id: assistantId.match(/^[0-9a-fA-F]{24}$/) ? assistantId : null },
-      { external_assistant_id: assistantId }
-    ],
-    user_id: userId
-  });
-
+  const assistant = await findByLocalOrExternalId(Assistant, assistantId, userId, 'external_assistant_id');
   if (!assistant) throw new Error('Assistant not found');
 
   const targetNumber = queryParams.to_number;
@@ -547,8 +471,7 @@ const getTotalBillableDuration = async (userId, assistantId, queryParams) => {
 
 // --- 8. Get Platform-Wise Billable Minutes For All Assistants ---
 const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+  const user = await getUserWithKey(userId);
 
   // Find all assistants for this user from the local DB
   const assistants = await Assistant.find({ user_id: user._id });

@@ -1,36 +1,16 @@
-const axios = require('axios');
-const https = require('https');
 const Tool = require('./tool.model');
-const User = require('../auth/user.model');
 const Assistant = require('../assistant/assistant.model');
-
-// Helper to get agent
-const getAgent = () => new https.Agent({ rejectUnauthorized: false });
+const { callExternal, getUserWithKey, findByLocalOrExternalId } = require('../shared/remote');
 
 const createTool = async (userId, toolData) => {
-  const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key.');
+  const user = await getUserWithKey(userId);
 
-  let externalResponseData = null;
-
-  try {
-    const response = await axios.post(
-      'https://api-livekit-vyom.indusnettechnologies.com/tool/create',
-      toolData,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: getAgent()
-      }
-    );
-    externalResponseData = response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'External API Error');
-    throw new Error('Failed to create tool externally');
-  }
+  const externalResponseData = await callExternal(user.api_key, {
+    method: 'post',
+    path: '/tool/create',
+    data: toolData,
+    networkFallback: 'Failed to create tool externally',
+  });
 
   // Save to Local DB
   const newTool = new Tool({
@@ -48,103 +28,52 @@ const createTool = async (userId, toolData) => {
 };
 
 const listTools = async (userId) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
-
-  try {
-    const response = await axios.get(
-      'https://api-livekit-vyom.indusnettechnologies.com/tool/list',
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to fetch tools');
-    throw new Error('Failed to contact external service');
-  }
+  const user = await getUserWithKey(userId);
+  return callExternal(user.api_key, { path: '/tool/list', fallback: 'Failed to fetch tools' });
 };
 
 const getToolDetails = async (userId, toolId) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
-
-  try {
-    const response = await axios.get(
-      `https://api-livekit-vyom.indusnettechnologies.com/tool/details/${toolId}`,
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to fetch tool details');
-    throw new Error('Failed to contact external service');
-  }
+  const user = await getUserWithKey(userId);
+  return callExternal(user.api_key, {
+    path: `/tool/details/${toolId}`,
+    fallback: 'Failed to fetch tool details',
+  });
 };
 
 const updateTool = async (userId, toolId, updateData) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+  const user = await getUserWithKey(userId);
 
-  try {
-    const response = await axios.patch(
-      `https://api-livekit-vyom.indusnettechnologies.com/tool/update/${toolId}`,
-      updateData,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: getAgent()
-      }
-    );
+  const result = await callExternal(user.api_key, {
+    method: 'patch',
+    path: `/tool/update/${toolId}`,
+    data: updateData,
+    fallback: 'Failed to update tool externally',
+  });
 
-    // Update Local DB
-    await Tool.findOneAndUpdate(
-      { external_tool_id: toolId },
-      { $set: updateData }
-    );
-
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to update tool externally');
-    throw new Error('Failed to contact external service');
-  }
+  // Update Local DB
+  await Tool.findOneAndUpdate({ external_tool_id: toolId }, { $set: updateData });
+  return result;
 };
 
 const deleteTool = async (userId, toolId) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
+  const user = await getUserWithKey(userId);
 
-  try {
-    const response = await axios.delete(
-      `https://api-livekit-vyom.indusnettechnologies.com/tool/delete/${toolId}`,
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        httpsAgent: getAgent()
-      }
-    );
+  const result = await callExternal(user.api_key, {
+    method: 'delete',
+    path: `/tool/delete/${toolId}`,
+    fallback: 'Failed to delete tool externally',
+  });
 
-    // Delete locally
-    await Tool.findOneAndDelete({ external_tool_id: toolId });
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to delete tool externally');
-    throw new Error('Failed to contact external service');
-  }
+  // Delete locally
+  await Tool.findOneAndDelete({ external_tool_id: toolId });
+  return result;
 };
 
 // --- Assistant Attachment / Detachment ---
 
 // Helper to resolve local DB IDs to External IDs (supports both)
 const resolveExternalIds = async (userId, assistantId, toolIds) => {
-  const assistant = await Assistant.findOne({
-    $or: [{ _id: assistantId.match(/^[0-9a-fA-F]{24}$/) ? assistantId : null }, { external_assistant_id: assistantId }],
-    user_id: userId
-  });
+  const assistant = await findByLocalOrExternalId(Assistant, assistantId, userId, 'external_assistant_id');
   if (!assistant) throw new Error('Assistant not found');
 
   const tools = await Tool.find({
@@ -165,55 +94,21 @@ const resolveExternalIds = async (userId, assistantId, toolIds) => {
   return { extAssistantId: assistant.external_assistant_id, extToolIds: externalToolIds };
 };
 
-const attachTools = async (userId, assistantId, toolIds) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
-
+// attach/detach differ only by the URL verb and the failure message.
+const attachOrDetach = async (userId, assistantId, toolIds, action) => {
+  const user = await getUserWithKey(userId);
   const { extAssistantId, extToolIds } = await resolveExternalIds(user._id, assistantId, toolIds);
 
-  try {
-    const response = await axios.post(
-      `https://api-livekit-vyom.indusnettechnologies.com/tool/attach/${extAssistantId}`,
-      { tool_ids: extToolIds },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to attach tools');
-    throw new Error('Failed to contact external service');
-  }
+  return callExternal(user.api_key, {
+    method: 'post',
+    path: `/tool/${action}/${extAssistantId}`,
+    data: { tool_ids: extToolIds },
+    fallback: `Failed to ${action} tools`,
+  });
 };
 
-const detachTools = async (userId, assistantId, toolIds) => {
-  const user = await User.findById(userId);
-  if (!user || !user.api_key) throw new Error('Valid User with API key required');
-
-  const { extAssistantId, extToolIds } = await resolveExternalIds(user._id, assistantId, toolIds);
-
-  try {
-    const response = await axios.post(
-      `https://api-livekit-vyom.indusnettechnologies.com/tool/detach/${extAssistantId}`,
-      { tool_ids: extToolIds },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: getAgent()
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'Failed to detach tools');
-    throw new Error('Failed to contact external service');
-  }
-};
+const attachTools = (userId, assistantId, toolIds) => attachOrDetach(userId, assistantId, toolIds, 'attach');
+const detachTools = (userId, assistantId, toolIds) => attachOrDetach(userId, assistantId, toolIds, 'detach');
 
 module.exports = {
   createTool,

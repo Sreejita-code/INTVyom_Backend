@@ -1,14 +1,11 @@
-const axios = require('axios');
-const https = require('https');
 const SipTrunk = require('./sip.model');
-const User = require('../auth/user.model'); 
+const User = require('../auth/user.model');
+const { callExternal, getUserWithKey, findByLocalOrExternalId } = require('../shared/remote');
 
 const createOutboundTrunk = async (data) => {
   const { user_id, trunk_name, trunk_type, trunk_config, passthrough_mode, passthrough_webhook_url } = data;
 
-  const user = await User.findById(user_id);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+  const user = await getUserWithKey(user_id);
 
   if (!['twilio', 'exotel'].includes(trunk_type.toLowerCase())) {
     throw new Error("Invalid trunk_type. Must be either 'twilio' or 'exotel'.");
@@ -22,26 +19,12 @@ const createOutboundTrunk = async (data) => {
     ...(passthrough_webhook_url && { passthrough_webhook_url })
   };
 
-  let externalResponseData = null;
-
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
-    const response = await axios.post(
-      'https://api-livekit-vyom.indusnettechnologies.com/sip/create-outbound-trunk',
-      externalPayload,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.api_key}`
-        },
-        httpsAgent: agent
-      }
-    );
-    externalResponseData = response.data;
-  } catch (error) {
-    if (error.response) throw new Error(error.response.data.message || 'External API Error');
-    throw new Error('Failed to contact external SIP service');
-  }
+  const externalResponseData = await callExternal(user.api_key, {
+    method: 'post',
+    path: '/sip/create-outbound-trunk',
+    data: externalPayload,
+    networkFallback: 'Failed to contact external SIP service',
+  });
 
   const newSipTrunk = new SipTrunk({
     user_id: user._id,
@@ -81,14 +64,7 @@ const getSipTrunkDetails = async (userId, trunkId) => {
   const user = await User.findById(userId);
   if (!user) throw new Error('User not found');
 
-  const trunk = await SipTrunk.findOne({
-    $or: [
-      { _id: trunkId.match(/^[0-9a-fA-F]{24}$/) ? trunkId : null },
-      { external_trunk_id: trunkId }
-    ],
-    user_id: user._id
-  });
-
+  const trunk = await findByLocalOrExternalId(SipTrunk, trunkId, user._id, 'external_trunk_id');
   if (!trunk) throw new Error('SIP Trunk not found');
 
   return {
@@ -101,14 +77,7 @@ const deleteSipTrunk = async (userId, trunkId) => {
   const user = await User.findById(userId);
   if (!user) throw new Error('User not found');
 
-  const trunk = await SipTrunk.findOne({
-    $or: [
-      { _id: trunkId.match(/^[0-9a-fA-F]{24}$/) ? trunkId : null },
-      { external_trunk_id: trunkId }
-    ],
-    user_id: user._id
-  });
-
+  const trunk = await findByLocalOrExternalId(SipTrunk, trunkId, user._id, 'external_trunk_id');
   if (!trunk) {
     throw new Error('SIP Trunk not found for this user in the local database.');
   }
@@ -118,9 +87,9 @@ const deleteSipTrunk = async (userId, trunkId) => {
   return {
     success: true,
     message: "SIP trunk deleted successfully from local database",
-    data: { 
+    data: {
       local_id: deletedTrunk._id,
-      trunk_id: trunk.external_trunk_id 
+      trunk_id: trunk.external_trunk_id
     },
     local_data_removed: !!deletedTrunk
   };
