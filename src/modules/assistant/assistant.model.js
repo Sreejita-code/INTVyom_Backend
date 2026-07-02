@@ -14,6 +14,11 @@ const AssistantSchema = new mongoose.Schema({
     enum: ['pipeline', 'realtime'],
     default: 'pipeline'
   },
+  llm_provider: {
+    type: String,
+    enum: ['openai', 'gemini'],
+    default: 'openai'
+  },
   llm_config: { type: Object },
   model: { type: String },
   config: { type: Object },

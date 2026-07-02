@@ -48,35 +48,38 @@ const buildPipelineTtsConfig = async ({ userId, ttsModel, ttsConfig }) => {
   return finalTtsConfig;
 };
 
-const buildRealtimeLlmConfig = async ({ userId, llmConfig }) => {
-  if (!llmConfig || typeof llmConfig !== 'object') {
-    throw new Error('assistant_llm_config is required for realtime mode');
+// Top-down provider resolution: explicit request value wins, else the persisted
+// per-assistant provider (dedicated field, then legacy nested value), else default openai.
+// This is what keeps the vendor consistent across a pipeline<->realtime switch.
+const resolveProvider = (llmConfig, existing) => {
+  const raw = llmConfig?.provider
+    ?? existing?.llm_provider
+    ?? existing?.llm_config?.provider;
+  const provider = raw ? String(raw).toLowerCase() : 'openai';
+  if (provider !== 'openai' && provider !== 'gemini') {
+    throw new Error("assistant_llm_config.provider must be 'openai' or 'gemini'");
   }
+  return provider;
+};
 
-  const finalLlmConfig = { ...llmConfig };
-  if (!finalLlmConfig.provider) {
-    finalLlmConfig.provider = 'gemini';
-  }
-  const provider = String(finalLlmConfig.provider).toLowerCase();
+// Build the assistant_llm_config sent to the external API for either mode.
+// Injects the resolved provider and resolves the api_key: caller-supplied key wins,
+// otherwise pull the user's integrated key for that provider (required — throws if absent).
+const buildLlmConfig = async ({ userId, llmConfig, provider }) => {
+  const finalLlmConfig = { ...(llmConfig || {}), provider };
 
-  // UPDATED: Support fetching both gemini and openai keys from Integrations
-  const supportedIntegrations = ['gemini', 'openai'];
+  const hasPerAssistantKey = typeof finalLlmConfig.api_key === 'string' && finalLlmConfig.api_key.trim() !== '';
+  if (!hasPerAssistantKey) {
+    const integration = await Integration.findOne({
+      user_id: userId,
+      service_name: provider // 'openai' or 'gemini'
+    });
 
-  if (supportedIntegrations.includes(provider)) {
-    const hasPerAssistantKey = typeof finalLlmConfig.api_key === 'string' && finalLlmConfig.api_key.trim() !== '';
-
-    if (!hasPerAssistantKey) {
-      const integration = await Integration.findOne({
-        user_id: userId,
-        service_name: provider // Dynamically looks up 'gemini' or 'openai'
-      });
-
-      if (!integration || !integration.api_key) {
-        throw new Error(`Integration required: Please integrate your ${provider} API key in the Integrations module first.`);
-      }
-
-      finalLlmConfig.api_key = integration.api_key;
+    if (!integration || !integration.api_key) {
+      throw new Error(`Integration required: Please integrate your ${provider} API key in the Integrations module first.`);
     }
+
+    finalLlmConfig.api_key = integration.api_key;
   }
 
   return finalLlmConfig;
@@ -134,6 +137,7 @@ const createAssistant = async (data) => {
   const user = await getUserWithKey(user_id);
 
   const mode = normalizeMode(assistant_llm_mode, 'pipeline');
+  const provider = resolveProvider(assistant_llm_config, null);
   const interactionConfig = sanitizeInteractionConfigForMode(assistant_interaction_config, mode);
 
   // 3. Construct External Payload
@@ -154,13 +158,14 @@ const createAssistant = async (data) => {
 
     if (assistant_tts_model !== undefined) externalPayload.assistant_tts_model = assistant_tts_model;
     if (finalTtsConfig !== undefined) externalPayload.assistant_tts_config = finalTtsConfig;
-  } else {
-    const finalLlmConfig = await buildRealtimeLlmConfig({
-      userId: user._id,
-      llmConfig: assistant_llm_config
-    });
-    externalPayload.assistant_llm_config = finalLlmConfig;
   }
+
+  // LLM vendor is forwarded in both modes (top-down provider setting).
+  externalPayload.assistant_llm_config = await buildLlmConfig({
+    userId: user._id,
+    llmConfig: assistant_llm_config,
+    provider
+  });
 
   if (assistant_start_instruction) externalPayload.assistant_start_instruction = assistant_start_instruction;
   if (interactionConfig) externalPayload.assistant_interaction_config = interactionConfig;
@@ -184,6 +189,7 @@ const createAssistant = async (data) => {
     name: assistant_name,
     description: assistant_description,
     llm_mode: mode,
+    llm_provider: provider,
     llm_config: assistant_llm_config,
     model: assistant_tts_model,
     config: assistant_tts_config, 
@@ -244,6 +250,10 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     existingAssistant?.llm_mode
   );
   const shouldIncludeModeInExternal = updateData.assistant_llm_mode !== undefined || modeDerivedFromPayload;
+  const provider = resolveProvider(updateData.assistant_llm_config, existingAssistant);
+  // Re-send the LLM vendor only when the caller touches llm config or the mode
+  // (every real mode switch sets the mode) — not on unrelated name/TTS edits.
+  const touchesLlm = updateData.assistant_llm_config !== undefined || updateData.assistant_llm_mode !== undefined;
 
   const externalUpdatePayload = { ...updateData };
 
@@ -254,6 +264,21 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     );
   }
 
+  // LLM vendor is forwarded in both modes (top-down provider setting), resolved above.
+  if (touchesLlm) {
+    const llmConfigToUse = updateData.assistant_llm_config !== undefined
+      ? updateData.assistant_llm_config
+      : existingAssistant?.llm_config;
+
+    externalUpdatePayload.assistant_llm_config = await buildLlmConfig({
+      userId: user._id,
+      llmConfig: llmConfigToUse,
+      provider
+    });
+  } else {
+    delete externalUpdatePayload.assistant_llm_config;
+  }
+
   if (targetMode === 'realtime') {
     if (shouldIncludeModeInExternal) {
       externalUpdatePayload.assistant_llm_mode = 'realtime';
@@ -262,24 +287,12 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     }
     delete externalUpdatePayload.assistant_tts_model;
     delete externalUpdatePayload.assistant_tts_config;
-
-    if (updateData.assistant_llm_config !== undefined || modeDerivedFromPayload) {
-      const llmConfigToUse = updateData.assistant_llm_config !== undefined
-        ? updateData.assistant_llm_config
-        : existingAssistant?.llm_config;
-
-      externalUpdatePayload.assistant_llm_config = await buildRealtimeLlmConfig({
-        userId: user._id,
-        llmConfig: llmConfigToUse
-      });
-    }
   } else {
     if (shouldIncludeModeInExternal) {
       externalUpdatePayload.assistant_llm_mode = 'pipeline';
     } else {
       delete externalUpdatePayload.assistant_llm_mode;
     }
-    delete externalUpdatePayload.assistant_llm_config;
 
     if (
       updateData.assistant_tts_model !== undefined ||
@@ -331,6 +344,8 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   if (updateData.assistant_llm_mode !== undefined || modeDerivedFromPayload) {
     localUpdateFields.llm_mode = targetMode;
   }
+  // Persist the resolved provider (top-down setting) on every update.
+  localUpdateFields.llm_provider = provider;
   if (updateData.assistant_end_call_enabled !== undefined) localUpdateFields.end_call_enabled = updateData.assistant_end_call_enabled;
   if (updateData.assistant_end_call_trigger_phrase !== undefined) localUpdateFields.end_call_trigger_phrase = updateData.assistant_end_call_trigger_phrase;
   if (updateData.assistant_end_call_agent_message !== undefined) localUpdateFields.end_call_agent_message = updateData.assistant_end_call_agent_message;
@@ -558,6 +573,81 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
   };
 };
 
+// --- Re-sync assistants after an Integration key is rotated ---
+// A provider key is snapshotted into each assistant on the external side at create/update time.
+// When the user stores a new key, push it to every existing assistant that uses that provider
+// (LLM matched by llm_provider, TTS matched by model). Assistants that carry their own
+// per-assistant api_key are left alone — an Integration key rotation is irrelevant to them.
+
+const RESYNC_CONCURRENCY = 10; // ponytail: tune to LiveKit's rate limit
+
+// Re-push one assistant's config with the freshly-stored key. Returns 'skipped' when the
+// assistant uses its own key (rotation irrelevant), else 'synced'. Throws on external failure.
+const resyncOne = async (user, a, isLlm, serviceName) => {
+  const payload = {};
+  if (isLlm) {
+    if (a.llm_config?.api_key?.trim()) return 'skipped';
+    payload.assistant_llm_config = await buildLlmConfig({
+      userId: user._id,
+      llmConfig: a.llm_config,
+      provider: a.llm_provider || serviceName
+    });
+  } else {
+    if (a.config?.api_key?.trim()) return 'skipped';
+    payload.assistant_tts_model = a.model;
+    payload.assistant_tts_config = await buildPipelineTtsConfig({
+      userId: user._id,
+      ttsModel: a.model,
+      ttsConfig: a.config
+    });
+  }
+
+  await callExternal(user.api_key, {
+    method: 'patch',
+    path: `/assistant/update/${a.external_assistant_id}`,
+    data: payload,
+    fallback: 'Failed to re-sync assistant',
+  });
+  return 'synced';
+};
+
+// Batched, best-effort. Calls onProgress({total,processed,succeeded,failed}) once up front and
+// after each batch so a background caller can persist progress. Returns the final summary.
+const resyncAssistantsForIntegration = async ({ user, serviceName, onProgress }) => {
+  if (!user?.api_key) return { total: 0, succeeded: 0, failed: [] }; // no external assistants possible
+
+  const isLlm = serviceName === 'openai' || serviceName === 'gemini';
+  const isTts = TTS_INTEGRATION_MODELS.includes(serviceName);
+  if (!isLlm && !isTts) return { total: 0, succeeded: 0, failed: [] };
+
+  const query = isLlm
+    ? { user_id: user._id, llm_provider: serviceName }
+    : { user_id: user._id, model: serviceName };
+  const assistants = await Assistant.find(query);
+
+  const total = assistants.length;
+  let processed = 0;
+  let succeeded = 0;
+  const failed = [];
+  if (onProgress) await onProgress({ total, processed, succeeded, failed });
+
+  for (let i = 0; i < assistants.length; i += RESYNC_CONCURRENCY) {
+    const batch = assistants.slice(i, i + RESYNC_CONCURRENCY);
+    const results = await Promise.allSettled(batch.map(a => resyncOne(user, a, isLlm, serviceName)));
+    results.forEach((r, k) => {
+      processed++;
+      if (r.status === 'fulfilled') {
+        if (r.value === 'synced') succeeded++;
+      } else {
+        failed.push({ assistant_id: batch[k].external_assistant_id, error: r.reason.message });
+      }
+    });
+    if (onProgress) await onProgress({ total, processed, succeeded, failed });
+  }
+
+  return { total, succeeded, failed };
+};
+
 module.exports = {
   createAssistant,
   listAssistants,
@@ -566,5 +656,6 @@ module.exports = {
   deleteAssistant,
   getCallLogs,
   getTotalBillableDuration,
-  getPlatformWiseBillableMinutes 
+  getPlatformWiseBillableMinutes,
+  resyncAssistantsForIntegration
 };

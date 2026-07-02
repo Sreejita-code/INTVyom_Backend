@@ -110,15 +110,24 @@ Additional fields for create/update:
 
 Mode-aware fields for create/update:
 - `assistant_llm_mode`: `pipeline` (default) or `realtime`.
-- `assistant_llm_config`: Realtime config object (used when mode is `realtime`).
+- `assistant_llm_config`: LLM config object. Forwarded in **both** modes.
 - `assistant_tts_model` and `assistant_tts_config`: Pipeline TTS fields (used when mode is `pipeline`).
 
-Realtime mode behavior:
-- `assistant_llm_config.provider = gemini` key resolution order:
-  1. `assistant_llm_config.api_key` from request
-  2. Integration key with `service_name=gemini`
-  3. Error if neither is available
-- `assistant_interaction_config.filler_words` is always forced to `false`.
+LLM provider (`assistant_llm_config.provider`):
+- Vendor selector, `openai` or `gemini`. Honored in both pipeline and realtime modes.
+- Top-down persistent setting: stored on the assistant (`llm_provider`), defaults to `openai`.
+- **Consistent across a mode switch** — switching `pipeline`↔`realtime` without re-sending
+  `provider` keeps the previously stored vendor. Only the vendor persists; `model`/`voice`
+  use each mode's vendor default.
+- To change vendor, send `assistant_llm_config.provider` on create or update.
+
+API key resolution (both modes):
+1. `assistant_llm_config.api_key` from the request (per-assistant override), else
+2. Integration key with `service_name` = the provider (`openai` / `gemini`), else
+3. Error `Integration required` — a key must be present in the request or the Integrations module.
+
+Other behavior:
+- `assistant_interaction_config.filler_words` is always forced to `false` in realtime mode.
 - Pipeline-only TTS fields are ignored/stripped when sending realtime updates.
 
 ### SIP (`/api/sip`)
@@ -134,8 +143,36 @@ Realtime mode behavior:
 
 ### Integration (`/api/integration`)
 
-- `POST /store` - Store or update provider API key.
+- `POST /store` - Store or update provider API key. Returns immediately; a background re-sync
+  (below) starts automatically. Response includes `resync: { job_id, status: "running" }`.
 - `GET /get?user_id=...&service_name=...` - Retrieve provider API key.
+- `GET /resync-status?user_id=...&service_name=...` - Current re-sync job:
+  `{ status, total, processed, succeeded, failed[], updatedAt }`. `status` is
+  `running | completed | error | interrupted` (`interrupted` = a running job that stalled, e.g.
+  a process restart — safe to re-trigger).
+- `POST /resync` - Manually (re-)trigger the re-sync for one provider. Body: `user_id`,
+  `service_name`. Returns `202` with `{ resync: { job_id, status } }`. This backs the frontend
+  "Re-sync" button and retries failures.
+
+**Key rotation re-sync.** A provider key is baked into each assistant on the external side at
+create/update time, so rotating a key would otherwise leave old assistants on the dead key. When
+you `POST /store` a new/rotated key, a **background job** re-pushes the new key to every existing
+assistant that uses that provider — LLM keys (`openai`/`gemini`) match by `llm_provider`, TTS keys
+(`sarvam`/`cartesia`/`elevenlabs`/`mistral`) match by TTS model. Assistants created with their own
+per-request `assistant_llm_config.api_key` / `assistant_tts_config.api_key` are left untouched.
+
+Frontend flow: after `POST /store` (or `POST /resync`), poll `GET /resync-status` every ~2s until
+`status !== "running"`; show `processed / total` progress, then `succeeded` and the `failed[]`
+list. Re-store the key or call `POST /resync` to retry failures.
+
+**One-time backfill (run once after deploy):** legacy assistants created before the `llm_provider`
+field existed are not matched by the LLM re-sync query. Backfill them:
+
+```bash
+node scripts/backfill-llm-provider.js
+```
+
+Idempotent, local-DB only (sets `llm_provider` from the stored `llm_config.provider`, else `openai`).
 
 ### Tool (`/api/tool`)
 
