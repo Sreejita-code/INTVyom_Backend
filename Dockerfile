@@ -11,6 +11,7 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=nonroot:nonroot src ./src
+COPY --chown=nonroot:nonroot swagger.yaml ./swagger.yaml
 
 EXPOSE 3000
 CMD ["src/app.js"]
