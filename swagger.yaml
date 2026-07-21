@@ -1,0 +1,2785 @@
+openapi: 3.0.3
+info:
+  title: INTVoicekit API
+  description: |
+    Backend API for INTVoicekit - a voice assistant platform built on Express.js with MongoDB.
+    This API acts as a proxy layer between clients and the external Vyom LiveKit API,
+    managing local state for users, assistants, SIP trunks, tools, inbound configurations,
+    and analytics.
+
+    ## Authentication
+    Most endpoints require a valid `user_id` (MongoDB ObjectId) that maps to a user with a
+    stored `api_key`. That `api_key` is forwarded as a Bearer token to the external Vyom API.
+
+    There is no JWT/session-based authentication at the Express layer -- authentication is
+    implicit per-request via user lookup.
+
+    ## Dual ID Resolution
+    Many endpoints accept either a local MongoDB `_id` or an external service ID
+    (e.g., `external_assistant_id`, `external_trunk_id`).
+
+    ## External API Proxy
+    Most service methods proxy requests to `https://api-livekit-vyom.indusnettechnologies.com/*`,
+    forwarding the user's Bearer token. External responses are typically passed through directly.
+  version: 1.0.0
+  contact:
+    name: INTVoicekit Support
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Auth
+    description: User authentication and registration
+  - name: Assistant
+    description: Voice assistant management (CRUD, call logs, billable minutes)
+  - name: SIP
+    description: SIP trunk management (outbound trunks)
+  - name: Call
+    description: Outbound call initiation
+  - name: Integration
+    description: Third-party service integration API key management
+  - name: Tool
+    description: Tool management and assistant attachment
+  - name: Web Call
+    description: Web-based call token generation
+  - name: Passthrough Call
+    description: Passthrough mode outbound calls and records
+  - name: Inbound
+    description: Inbound call configuration and assignment
+  - name: Inbound Context Strategy
+    description: Inbound context strategy management (webhooks)
+  - name: Analytics
+    description: Call analytics and dashboard metrics
+  - name: Audio
+    description: Audio file upload, listing, and management
+
+paths:
+  # ==================== AUTH ====================
+  /api/auth/signup:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      description: Creates a new user account with organization details.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_name, org_name, user_email, password]
+              properties:
+                user_name:
+                  type: string
+                  example: "john_doe"
+                org_name:
+                  type: string
+                  example: "Acme Corp"
+                user_email:
+                  type: string
+                  format: email
+                  example: "john@acme.com"
+                password:
+                  type: string
+                  format: password
+                  example: "securePass123"
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "User registered successfully"
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        example: "665f1a2b3c4d5e6f7a8b9c0d"
+                      user_name:
+                        type: string
+                        example: "john_doe"
+                      user_email:
+                        type: string
+                        example: "john@acme.com"
+                      api_key:
+                        type: string
+                        nullable: true
+                        example: null
+        '400':
+          description: Validation error or user already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with credentials
+      description: Authenticates a user by username and password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_name, password]
+              properties:
+                user_name:
+                  type: string
+                  example: "john_doe"
+                password:
+                  type: string
+                  format: password
+                  example: "securePass123"
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Login successful"
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        example: "665f1a2b3c4d5e6f7a8b9c0d"
+                      user_name:
+                        type: string
+                        example: "john_doe"
+                      user_email:
+                        type: string
+                        example: "john@acme.com"
+                      api_key:
+                        type: string
+                        example: "vyom_livekit_xxxxxxxxxxxxxxxx"
+        '400':
+          description: Missing credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/get_api:
+    get:
+      tags: [Auth]
+      summary: Get user API key
+      description: Retrieves the API key for a given user by username.
+      parameters:
+        - name: user_name
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "john_doe"
+      responses:
+        '200':
+          description: API key retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: string
+                    example: "665f1a2b3c4d5e6f7a8b9c0d"
+                  user_name:
+                    type: string
+                    example: "john_doe"
+                  api_key:
+                    type: string
+                    example: "vyom_livekit_xxxxxxxxxxxxxxxx"
+        '400':
+          description: Missing user_name parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: User not found or no API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== ASSISTANT ====================
+  /api/assistant/create:
+    post:
+      tags: [Assistant]
+      summary: Create a new voice assistant
+      description: |
+        Creates a voice assistant both locally in MongoDB and externally via the Vyom API.
+        Supports two LLM modes: `pipeline` (uses TTS models like sarvam, cartesia, elevenlabs)
+        and `realtime` (uses real-time LLM providers like Gemini).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, assistant_name, assistant_description, assistant_prompt]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                assistant_name:
+                  type: string
+                  example: "Customer Support Bot"
+                assistant_description:
+                  type: string
+                  example: "Handles inbound customer support queries"
+                assistant_prompt:
+                  type: string
+                  example: "You are a helpful customer support agent..."
+                assistant_llm_mode:
+                  type: string
+                  enum: [pipeline, realtime]
+                  default: pipeline
+                  example: "pipeline"
+                assistant_llm_config:
+                  type: object
+                  description: Required when mode=realtime
+                  properties:
+                    provider:
+                      type: string
+                      example: "gemini"
+                    api_key:
+                      type: string
+                      example: "AIza..."
+                assistant_tts_model:
+                  type: string
+                  description: Used in pipeline mode
+                  enum: [sarvam, cartesia, elevenlabs, mistral]
+                  example: "sarvam"
+                assistant_tts_config:
+                  type: object
+                  description: TTS configuration (varies by model)
+                assistant_start_instruction:
+                  type: string
+                  example: "Greet the user warmly"
+                assistant_interaction_config:
+                  type: object
+                  properties:
+                    speaks_first:
+                      type: boolean
+                      example: true
+                    filler_words:
+                      type: boolean
+                      example: false
+                    silence_reprompts:
+                      type: boolean
+                      example: true
+                assistant_end_call_enabled:
+                  type: boolean
+                  example: false
+                assistant_end_call_trigger_phrase:
+                  type: string
+                  example: "goodbye"
+                assistant_end_call_agent_message:
+                  type: string
+                  example: "Thank you for calling. Goodbye!"
+                assistant_end_call_url:
+                  type: string
+                  format: uri
+                  example: "https://example.com/webhook/end-call"
+                assistant_greeting_audio:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      example: true
+                    audio_id:
+                      type: string
+                      example: "audio_123"
+      responses:
+        '201':
+          description: Assistant created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Assistant created successfully"
+                  assistant:
+                    $ref: '#/components/schemas/Assistant'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/list:
+    get:
+      tags: [Assistant]
+      summary: List all assistants
+      description: Retrieves a paginated list of assistants from the external API.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+      responses:
+        '200':
+          description: Assistant list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Assistant'
+        '400':
+          description: Missing user_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/details/{id}:
+    get:
+      tags: [Assistant]
+      summary: Get assistant details
+      description: Retrieves details for a specific assistant by local or external ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assistant details retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Assistant'
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assistant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/update/{id}:
+    patch:
+      tags: [Assistant]
+      summary: Update an assistant
+      description: Updates an assistant locally and on the external Vyom API.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                assistant_name:
+                  type: string
+                assistant_description:
+                  type: string
+                assistant_prompt:
+                  type: string
+                assistant_llm_mode:
+                  type: string
+                  enum: [pipeline, realtime]
+                assistant_llm_config:
+                  type: object
+                assistant_tts_model:
+                  type: string
+                assistant_tts_config:
+                  type: object
+                assistant_start_instruction:
+                  type: string
+                assistant_interaction_config:
+                  type: object
+                assistant_end_call_enabled:
+                  type: boolean
+                assistant_end_call_trigger_phrase:
+                  type: string
+                assistant_end_call_agent_message:
+                  type: string
+                assistant_end_call_url:
+                  type: string
+                assistant_greeting_audio:
+                  type: object
+      responses:
+        '200':
+          description: Assistant updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Assistant updated successfully"
+                  data:
+                    type: object
+                    properties:
+                      assistant_id:
+                        type: string
+                  local_data:
+                    $ref: '#/components/schemas/Assistant'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/delete/{id}:
+    delete:
+      tags: [Assistant]
+      summary: Delete an assistant
+      description: Deletes an assistant from both local DB and external API.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Can also be provided in request body
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: string
+                  description: Alternative to query parameter
+      responses:
+        '200':
+          description: Assistant deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Assistant deleted successfully"
+                  data:
+                    type: object
+                    properties:
+                      assistant_id:
+                        type: string
+                  local_data_removed:
+                    type: boolean
+                    example: true
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/call-logs/{id}:
+    get:
+      tags: [Assistant]
+      summary: Get assistant call logs
+      description: Retrieves paginated call logs for a specific assistant.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+      responses:
+        '200':
+          description: Call logs retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/billable-minutes/{id}:
+    get:
+      tags: [Assistant]
+      summary: Get billable minutes for an assistant
+      description: Calculates total billable minutes for a specific assistant and phone number.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to_number
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "+1234567890"
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Billable minutes calculated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Total billable minutes calculated successfully"
+                  data:
+                    type: object
+                    properties:
+                      assistant_id:
+                        type: string
+                      to_number:
+                        type: string
+                      total_billable_duration_minutes:
+                        type: number
+                        example: 125.5
+                      timespan_evaluated:
+                        type: object
+                        properties:
+                          start_date:
+                            type: string
+                          end_date:
+                            type: string
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/platform-billable-minutes:
+    get:
+      tags: [Assistant]
+      summary: Get platform-wise billable minutes
+      description: Calculates billable minutes grouped by platform phone number.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Platform billable minutes retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Platform-wise billable minutes calculated successfully"
+                  data:
+                    type: object
+                    properties:
+                      platform_wise_minutes:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            platform_number:
+                              type: string
+                            total_billable_minutes:
+                              type: number
+                      timespan_evaluated:
+                        type: object
+                        properties:
+                          start_date:
+                            type: string
+                          end_date:
+                            type: string
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/assistant/platform-billable-minutes/download:
+    get:
+      tags: [Assistant]
+      summary: Download platform billable minutes as Excel
+      description: Downloads an Excel file (.xlsx) with platform-wise billable minutes.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Excel file download
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== SIP ====================
+  /api/sip/create-outbound-trunk:
+    post:
+      tags: [SIP]
+      summary: Create an outbound SIP trunk
+      description: |
+        Creates a SIP trunk both locally and externally. Supports Twilio and Exotel trunk types.
+        Optionally enables passthrough mode for direct WebSocket connections.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, trunk_name, trunk_type, trunk_config]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                trunk_name:
+                  type: string
+                  example: "Production Twilio Trunk"
+                trunk_type:
+                  type: string
+                  enum: [twilio, exotel]
+                  example: "twilio"
+                trunk_config:
+                  type: object
+                  description: |
+                    For Twilio: { "address": "string", "numbers": ["string"], "username": "string", "password": "string" }
+                    For Exotel: { "exotel_number": "string" }
+                  properties:
+                    address:
+                      type: string
+                      example: "pstn.twilio.com"
+                    numbers:
+                      type: array
+                      items:
+                        type: string
+                      example: ["+1234567890"]
+                    username:
+                      type: string
+                    password:
+                      type: string
+                    exotel_number:
+                      type: string
+                passthrough_mode:
+                  type: boolean
+                  default: false
+                passthrough_webhook_url:
+                  type: string
+                  format: uri
+      responses:
+        '201':
+          description: Outbound trunk created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Outbound trunk created successfully locally and externally"
+                  trunk:
+                    $ref: '#/components/schemas/SipTrunk'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sip/list:
+    get:
+      tags: [SIP]
+      summary: List SIP trunks
+      description: Retrieves all SIP trunks for a user from the local database.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SIP trunks retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "SIP trunks retrieved successfully from local database"
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SipTrunk'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sip/details/{id}:
+    get:
+      tags: [SIP]
+      summary: Get SIP trunk details
+      description: Retrieves details for a specific SIP trunk by local or external ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SIP trunk details retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/SipTrunk'
+        '404':
+          description: SIP trunk not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sip/delete/{id}:
+    delete:
+      tags: [SIP]
+      summary: Delete a SIP trunk
+      description: Deletes a SIP trunk from the local database.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Can also be provided in request body
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: string
+                  description: Alternative to query parameter
+      responses:
+        '200':
+          description: SIP trunk deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "SIP trunk deleted successfully from local database"
+                  data:
+                    type: object
+                    properties:
+                      local_id:
+                        type: string
+                      trunk_id:
+                        type: string
+                  local_data_removed:
+                    type: boolean
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== CALL ====================
+  /api/call/outbound:
+    post:
+      tags: [Call]
+      summary: Initiate an outbound call
+      description: Initiates an outbound call using an assistant and SIP trunk.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, assistant_id, trunk_id, to_number]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                assistant_id:
+                  type: string
+                  description: Local _id or external_assistant_id
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                trunk_id:
+                  type: string
+                  description: Local _id or external_trunk_id
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                to_number:
+                  type: string
+                  example: "+1234567890"
+                metadata:
+                  type: object
+                  description: Optional metadata passed through to the external call API
+                  example: {"campaign_id": "promo_2024", "source": "web"}
+      responses:
+        '200':
+          description: Call initiated (external API response)
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== INTEGRATION ====================
+  /api/integration/store:
+    post:
+      tags: [Integration]
+      summary: Store integration API key
+      description: |
+        Saves an API key for a third-party service (TTS or LLM).
+        Service type is auto-inferred from the service name if not provided.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, service_name, api_key]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                service_type:
+                  type: string
+                  enum: [TTS, LLM]
+                  description: Auto-inferred if omitted
+                service_name:
+                  type: string
+                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+                  example: "sarvam"
+                api_key:
+                  type: string
+                  example: "sk-xxxxxxxxxxxx"
+      responses:
+        '200':
+          description: API key saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Integration API key saved successfully"
+                  data:
+                    type: object
+                    properties:
+                      service_type:
+                        type: string
+                        example: "TTS"
+                      service_name:
+                        type: string
+                        example: "sarvam"
+                      api_key_preview:
+                        type: string
+                        example: "***xxxx"
+                  resync:
+                    type: object
+                    nullable: true
+                    description: Re-sync job status if existing assistants were updated
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum: [pending, in_progress, completed, failed]
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/integration/get:
+    get:
+      tags: [Integration]
+      summary: Get integration API key
+      description: Retrieves the stored API key for a specific service.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: service_name
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+      responses:
+        '200':
+          description: API key retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      service_type:
+                        type: string
+                      service_name:
+                        type: string
+                      api_key:
+                        type: string
+        '404':
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/integration/resync-status:
+    get:
+      tags: [Integration]
+      summary: Get re-sync job status
+      description: Retrieves the status of a re-sync job for a user and service.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: service_name
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+      responses:
+        '200':
+          description: Re-sync status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+                        enum: [pending, in_progress, completed, failed]
+                      created_at:
+                        type: string
+                        format: date-time
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No re-sync job found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/integration/resync:
+    post:
+      tags: [Integration]
+      summary: Trigger re-sync for a service
+      description: |
+        Manually triggers a re-sync to push updated API keys to all existing
+        assistants using this provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, service_name]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                service_name:
+                  type: string
+                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+                  example: "sarvam"
+      responses:
+        '202':
+          description: Re-sync triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  resync:
+                    type: object
+                    properties:
+                      job_id:
+                        type: string
+                      status:
+                        type: string
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== TOOL ====================
+  /api/tool/create:
+    post:
+      tags: [Tool]
+      summary: Create a tool
+      description: Creates a tool both locally and externally via the Vyom API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, tool_name, tool_execution_type]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                tool_name:
+                  type: string
+                  example: "Weather Check"
+                tool_description:
+                  type: string
+                  example: "Fetches current weather for a location"
+                tool_execution_type:
+                  type: string
+                  example: "webhook"
+                tool_parameters:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      type:
+                        type: string
+                      required:
+                        type: boolean
+                  default: []
+                tool_execution_config:
+                  type: object
+                  description: Configuration for tool execution (URL, headers, etc.)
+                  properties:
+                    url:
+                      type: string
+                      format: uri
+                    method:
+                      type: string
+                      enum: [GET, POST, PUT, DELETE]
+                    headers:
+                      type: object
+      responses:
+        '201':
+          description: Tool created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      tool_id:
+                        type: string
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tool/list:
+    get:
+      tags: [Tool]
+      summary: List tools
+      description: Retrieves all tools from the external API.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tool list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tool/details/{id}:
+    get:
+      tags: [Tool]
+      summary: Get tool details
+      description: Retrieves details for a specific tool.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tool details retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tool/update/{id}:
+    patch:
+      tags: [Tool]
+      summary: Update a tool
+      description: Updates a tool on the external API.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                tool_name:
+                  type: string
+                tool_description:
+                  type: string
+                tool_execution_type:
+                  type: string
+                tool_parameters:
+                  type: array
+                  items:
+                    type: object
+                tool_execution_config:
+                  type: object
+      responses:
+        '200':
+          description: Tool updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tool/delete/{id}:
+    delete:
+      tags: [Tool]
+      summary: Delete a tool
+      description: Deletes a tool from the external API.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Can also be provided in request body
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: string
+                  description: Alternative to query parameter
+      responses:
+        '200':
+          description: Tool deleted
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tool/attach/{assistant_id}:
+    post:
+      tags: [Tool]
+      summary: Attach tools to an assistant
+      description: Attaches one or more tools to a specific assistant.
+      parameters:
+        - name: assistant_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Local _id or external_assistant_id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, tool_ids]
+              properties:
+                user_id:
+                  type: string
+                tool_ids:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  description: Array of local _id or external_tool_id
+                  example: ["665f1a2b3c4d5e6f7a8b9c0d", "665f1a2b3c4d5e6f7a8b9c0e"]
+      responses:
+        '200':
+          description: Tools attached
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tool/detach/{assistant_id}:
+    post:
+      tags: [Tool]
+      summary: Detach tools from an assistant
+      description: Detaches one or more tools from a specific assistant.
+      parameters:
+        - name: assistant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, tool_ids]
+              properties:
+                user_id:
+                  type: string
+                tool_ids:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+      responses:
+        '200':
+          description: Tools detached
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== WEB CALL ====================
+  /api/web-call/get-token:
+    post:
+      tags: [Web Call]
+      summary: Get web call token
+      description: |
+        Generates a token for initiating a web-based call with an assistant.
+        Supports text-only mode for chat interactions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, assistant_id]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                assistant_id:
+                  type: string
+                  description: Local _id or external_assistant_id
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                metadata:
+                  type: object
+                  default: {}
+                  description: Custom metadata for the call
+                text_only:
+                  type: boolean
+                  default: false
+                  description: Set true for text-only (chat) calls
+      responses:
+        '200':
+          description: Token generated (external API response)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  room_token:
+                    type: string
+                  room_name:
+                    type: string
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assistant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== PASSTHROUGH CALL ====================
+  /api/passthrough-call/passthrough-outbound:
+    post:
+      tags: [Passthrough Call]
+      summary: Initiate passthrough outbound call
+      description: |
+        Initiates an outbound call in passthrough mode. The SIP trunk must have
+        `passthrough_mode: true` enabled. Returns room token for direct WebSocket connection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, trunk_id, to_number]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                trunk_id:
+                  type: string
+                  description: Local _id or external_trunk_id (must have passthrough_mode=true)
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                to_number:
+                  type: string
+                  example: "+1234567890"
+                metadata:
+                  type: object
+                  description: Optional call metadata
+      responses:
+        '200':
+          description: Passthrough call initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  room_token:
+                    type: string
+                  room_name:
+                    type: string
+                  queue_id:
+                    type: string
+                  status:
+                    type: string
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Passthrough trunk not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/passthrough-call/call-records:
+    get:
+      tags: [Passthrough Call]
+      summary: Get passthrough call records
+      description: Retrieves call records filtered to passthrough-only calls.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to_number
+          in: query
+          schema:
+            type: string
+        - name: call_status
+          in: query
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Call records retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== INBOUND ====================
+  /api/inbound/assign:
+    post:
+      tags: [Inbound]
+      summary: Assign assistant to inbound number
+      description: Assigns an assistant to handle inbound calls on a specific phone number.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, assistant_id, service, inbound_config]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                assistant_id:
+                  type: string
+                  description: Local _id or external_assistant_id
+                service:
+                  type: string
+                  description: Telephony service provider
+                inbound_config:
+                  type: object
+                  required: [phone_number]
+                  properties:
+                    phone_number:
+                      type: string
+                      example: "+1234567890"
+                inbound_context_strategy_id:
+                  type: string
+                  description: Optional context strategy ID
+      responses:
+        '201':
+          description: Inbound assignment created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inbound_id:
+                    type: string
+                  assistant_id:
+                    type: string
+                  phone_number:
+                    type: string
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound/list:
+    get:
+      tags: [Inbound]
+      summary: List inbound configurations
+      description: Retrieves all inbound call configurations.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Inbound list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound/update/{id}:
+    patch:
+      tags: [Inbound]
+      summary: Update inbound configuration
+      description: |
+        Updates an inbound configuration. Pass `null` for assistant_id to detach
+        the current assistant.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                assistant_id:
+                  type: string
+                  nullable: true
+                  description: Pass null to detach assistant
+                inbound_context_strategy_id:
+                  type: string
+      responses:
+        '200':
+          description: Inbound updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound/detach/{id}:
+    post:
+      tags: [Inbound]
+      summary: Detach assistant from inbound
+      description: Detaches the assigned assistant from an inbound configuration.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Can also be provided in request body
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: string
+                  description: Alternative to query parameter
+      responses:
+        '200':
+          description: Assistant detached
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound/delete/{id}:
+    delete:
+      tags: [Inbound]
+      summary: Delete inbound configuration
+      description: Deletes an inbound configuration from both local DB and external API.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Can also be provided in request body
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: string
+                  description: Alternative to query parameter
+      responses:
+        '200':
+          description: Inbound deleted
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== INBOUND CONTEXT STRATEGY ====================
+  /api/inbound-context-strategy/create:
+    post:
+      tags: [Inbound Context Strategy]
+      summary: Create an inbound context strategy
+      description: Creates a webhook-based context strategy for inbound calls.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, name, strategy_config]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                name:
+                  type: string
+                  example: "Customer Context Strategy"
+                type:
+                  type: string
+                  default: webhook
+                  example: "webhook"
+                strategy_config:
+                  type: object
+                  required: [url]
+                  properties:
+                    url:
+                      type: string
+                      format: uri
+                      example: "https://example.com/webhook/context"
+      responses:
+        '201':
+          description: Strategy created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound-context-strategy/list:
+    get:
+      tags: [Inbound Context Strategy]
+      summary: List inbound context strategies
+      description: Retrieves all inbound context strategies.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Strategy list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound-context-strategy/details/{id}:
+    get:
+      tags: [Inbound Context Strategy]
+      summary: Get strategy details
+      description: Retrieves details for a specific inbound context strategy.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Strategy details retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound-context-strategy/update/{id}:
+    patch:
+      tags: [Inbound Context Strategy]
+      summary: Update a strategy
+      description: Updates an inbound context strategy locally and externally.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                name:
+                  type: string
+                strategy_config:
+                  type: object
+                  properties:
+                    url:
+                      type: string
+                      format: uri
+      responses:
+        '200':
+          description: Strategy updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/inbound-context-strategy/delete/{id}:
+    delete:
+      tags: [Inbound Context Strategy]
+      summary: Delete a strategy
+      description: Deletes an inbound context strategy from both local DB and external API.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Can also be provided in request body
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: string
+                  description: Alternative to query parameter
+      responses:
+        '200':
+          description: Strategy deleted
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== ANALYTICS ====================
+  /api/analytics/dashboard:
+    get:
+      tags: [Analytics]
+      summary: Get analytics dashboard
+      description: Retrieves an aggregated dashboard summary of call analytics.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Dashboard data retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    description: Aggregated dashboard metrics
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/analytics/calls/by-assistant:
+    get:
+      tags: [Analytics]
+      summary: Get call analytics by assistant
+      description: Retrieves call metrics grouped by assistant.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Per-assistant analytics retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/analytics/calls/by-phone-number:
+    get:
+      tags: [Analytics]
+      summary: Get call analytics by phone number
+      description: Retrieves call metrics grouped by phone number.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: assistant_id
+          in: query
+          schema:
+            type: string
+          description: Filter by specific assistant
+      responses:
+        '200':
+          description: Per-phone-number analytics retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/analytics/calls/by-time:
+    get:
+      tags: [Analytics]
+      summary: Get call analytics by time
+      description: Retrieves call metrics as a time series.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month]
+          description: Time bucket granularity
+        - name: assistant_id
+          in: query
+          schema:
+            type: string
+          description: Filter by specific assistant
+      responses:
+        '200':
+          description: Time-series analytics retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/analytics/calls/by-service:
+    get:
+      tags: [Analytics]
+      summary: Get call analytics by service
+      description: Retrieves call metrics grouped by telephony service provider.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Per-service analytics retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== AUDIO ====================
+  /api/audio/upload:
+    post:
+      tags: [Audio]
+      summary: Upload an audio file
+      description: |
+        Uploads an audio file for use with voice assistants.
+        Uses multipart/form-data with a file field.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [user_id, audio_name, transcript, file]
+              properties:
+                user_id:
+                  type: string
+                  example: "665f1a2b3c4d5e6f7a8b9c0d"
+                audio_name:
+                  type: string
+                  example: "Welcome Greeting"
+                transcript:
+                  type: string
+                  example: "Hello, welcome to our service!"
+                file:
+                  type: string
+                  format: binary
+                  description: Audio file (binary)
+      responses:
+        '200':
+          description: Audio uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      audio_id:
+                        type: string
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/audio/list:
+    get:
+      tags: [Audio]
+      summary: List audio files
+      description: Retrieves a paginated list of uploaded audio files.
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Audio list retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/audio/{audio_id}:
+    get:
+      tags: [Audio]
+      summary: Get audio details
+      description: Retrieves details for a specific audio file.
+      parameters:
+        - name: audio_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audio details retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/audio/{audio_id}:
+    delete:
+      tags: [Audio]
+      summary: Delete an audio file
+      description: Deletes a specific audio file.
+      parameters:
+        - name: audio_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audio deleted
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "Something went wrong"
+
+    Assistant:
+      type: object
+      properties:
+        _id:
+          type: string
+          example: "665f1a2b3c4d5e6f7a8b9c0d"
+        user_id:
+          type: string
+          example: "665f1a2b3c4d5e6f7a8b9c0d"
+        external_assistant_id:
+          type: string
+          example: "ext_asst_abc123"
+        name:
+          type: string
+          example: "Customer Support Bot"
+        description:
+          type: string
+          example: "Handles inbound customer support queries"
+        prompt:
+          type: string
+          example: "You are a helpful customer support agent..."
+        llm_mode:
+          type: string
+          enum: [pipeline, realtime]
+          example: "pipeline"
+        llm_provider:
+          type: string
+          enum: [openai, gemini]
+          default: openai
+          example: "openai"
+        llm_config:
+          type: object
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        config:
+          type: object
+          nullable: true
+        start_instruction:
+          type: string
+          nullable: true
+        interaction_config:
+          type: object
+          properties:
+            speaks_first:
+              type: boolean
+              default: true
+            filler_words:
+              type: boolean
+              default: false
+            silence_reprompts:
+              type: boolean
+              default: false
+            silence_reprompt_interval:
+              type: number
+              default: 10.0
+              description: Seconds to wait before reprompting on silence
+            silence_max_reprompts:
+              type: integer
+              default: 2
+              description: Maximum number of silence reprompts
+            background_sound_enabled:
+              type: boolean
+              default: false
+            thinking_sound_enabled:
+              type: boolean
+              default: false
+            preferred_languages:
+              type: array
+              items:
+                type: string
+              default: []
+        greeting_audio:
+          type: object
+          nullable: true
+        end_call_enabled:
+          type: boolean
+          example: false
+        end_call_trigger_phrase:
+          type: string
+          nullable: true
+        end_call_agent_message:
+          type: string
+          nullable: true
+        end_call_url:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SipTrunk:
+      type: object
+      properties:
+        _id:
+          type: string
+          example: "665f1a2b3c4d5e6f7a8b9c0d"
+        user_id:
+          type: string
+          example: "665f1a2b3c4d5e6f7a8b9c0d"
+        external_trunk_id:
+          type: string
+          example: "ext_trunk_xyz789"
+        trunk_name:
+          type: string
+          example: "Production Twilio Trunk"
+        trunk_type:
+          type: string
+          enum: [twilio, exotel]
+          example: "twilio"
+        trunk_config:
+          type: object
+          description: Type-specific configuration (Twilio or Exotel)
+        passthrough_mode:
+          type: boolean
+          example: false
+        passthrough_webhook_url:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+  securitySchemes:
+    UserIdAuth:
+      type: apiKey
+      in: query
+      name: user_id
+      description: |
+        Most endpoints require a valid user_id query parameter or request body field.
+        The server looks up the user's stored api_key and forwards it as a Bearer token
+        to the external Vyom API.
+
+globalSecurity:
+  - UserIdAuth: []
