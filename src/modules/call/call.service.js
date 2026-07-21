@@ -3,7 +3,7 @@ const Assistant = require('../assistant/assistant.model');
 const { callExternal, getUserWithKey, findByLocalOrExternalId } = require('../shared/remote');
 
 const makeOutboundCall = async (data) => {
-  const { user_id, assistant_id, trunk_id, to_number } = data;
+  const { user_id, assistant_id, trunk_id, to_number, metadata } = data;
 
   // 1. Validate User & API Key
   const user = await getUserWithKey(user_id);
@@ -26,7 +26,8 @@ const makeOutboundCall = async (data) => {
     assistant_id: assistant.external_assistant_id,
     trunk_id: trunk.external_trunk_id,
     to_number: to_number,
-    call_service: trunk.trunk_type // This automatically resolves to 'twilio' or 'exotel'
+    call_service: trunk.trunk_type,
+    ...(metadata && { metadata })
   };
 
   // 5. Call External API
