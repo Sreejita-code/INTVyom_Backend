@@ -9,7 +9,7 @@ const IntegrationSchema = new mongoose.Schema({
   service_type: { 
     type: String, 
     required: true,
-    enum: ['TTS', 'LLM'],
+    enum: ['TTS', 'LLM', 'STT'],
     default: 'TTS'
   },
   service_name: { 

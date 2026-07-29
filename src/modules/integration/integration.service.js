@@ -55,7 +55,9 @@ const storeApiKey = async (data) => {
   const normalizedServiceName = service_name.toLowerCase();
   const normalizedServiceType = service_type
     ? service_type.toUpperCase()
-    : (normalizedServiceName === 'gemini' ? 'LLM' : 'TTS');
+    : normalizedServiceName === 'gemini' ? 'LLM'
+      : normalizedServiceName === 'sarvam_stt' ? 'STT'
+      : 'TTS';
 
   // We use findOneAndUpdate with upsert: true. 
   // If a key for this user + service_name exists, it updates it. If not, it creates it.

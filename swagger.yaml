@@ -277,6 +277,14 @@ paths:
                 assistant_tts_config:
                   type: object
                   description: TTS configuration (varies by model)
+                assistant_stt_model:
+                  type: string
+                  description: User-transcription source (pipeline mode only)
+                  enum: [sarvam, native]
+                  default: sarvam
+                assistant_stt_config:
+                  type: object
+                  description: STT provider config (requires assistant_stt_model)
                 assistant_start_instruction:
                   type: string
                   example: "Greet the user warmly"
@@ -466,6 +474,11 @@ paths:
                 assistant_tts_model:
                   type: string
                 assistant_tts_config:
+                  type: object
+                assistant_stt_model:
+                  type: string
+                  enum: [sarvam, native]
+                assistant_stt_config:
                   type: object
                 assistant_start_instruction:
                   type: string
@@ -1091,11 +1104,11 @@ paths:
                   example: "665f1a2b3c4d5e6f7a8b9c0d"
                 service_type:
                   type: string
-                  enum: [TTS, LLM]
+                  enum: [TTS, LLM, STT]
                   description: Auto-inferred if omitted
                 service_name:
                   type: string
-                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
                   example: "sarvam"
                 api_key:
                   type: string
@@ -1159,7 +1172,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+            enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
       responses:
         '200':
           description: API key retrieved
@@ -1209,7 +1222,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+            enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
       responses:
         '200':
           description: Re-sync status retrieved
@@ -1271,7 +1284,7 @@ paths:
                   example: "665f1a2b3c4d5e6f7a8b9c0d"
                 service_name:
                   type: string
-                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini]
+                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
                   example: "sarvam"
       responses:
         '202':
@@ -2678,6 +2691,12 @@ components:
           type: string
           nullable: true
         config:
+          type: object
+          nullable: true
+        stt_model:
+          type: string
+          nullable: true
+        stt_config:
           type: object
           nullable: true
         start_instruction:

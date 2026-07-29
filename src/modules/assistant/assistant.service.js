@@ -6,6 +6,7 @@ const Integration = require('../integration/integration.model');
 const { callExternal, getUserWithKey, findByLocalOrExternalId } = require('../shared/remote');
 
 const TTS_INTEGRATION_MODELS = ['sarvam', 'cartesia', 'elevenlabs', 'mistral'];
+const STT_INTEGRATION_MODELS = ['sarvam'];
 
 const normalizeMode = (mode, defaultMode = 'pipeline') => {
   if (mode === undefined || mode === null || mode === '') return defaultMode;
@@ -46,6 +47,29 @@ const buildPipelineTtsConfig = async ({ userId, ttsModel, ttsConfig }) => {
   }
 
   return finalTtsConfig;
+};
+
+const buildPipelineSttConfig = async ({ userId, sttModel, sttConfig }) => {
+  const finalSttConfig = sttConfig ? { ...sttConfig } : undefined;
+
+  if (STT_INTEGRATION_MODELS.includes(sttModel?.toLowerCase())) {
+    const integration = await Integration.findOne({
+      user_id: userId,
+      service_name: `${sttModel.toLowerCase()}_stt`
+    });
+
+    if (!integration || !integration.api_key) {
+      throw new Error(`Integration required: Please integrate your ${sttModel} STT API key in the Integrations module first.`);
+    }
+
+    if (!finalSttConfig) {
+      return { api_key: integration.api_key };
+    }
+
+    finalSttConfig.api_key = integration.api_key;
+  }
+
+  return finalSttConfig;
 };
 
 // Top-down provider resolution: explicit request value wins, else the persisted
@@ -100,7 +124,8 @@ const inferTargetModeForUpdate = (updateData, existingMode) => {
     };
   }
 
-  if (updateData.assistant_tts_model !== undefined || updateData.assistant_tts_config !== undefined) {
+  if (updateData.assistant_tts_model !== undefined || updateData.assistant_tts_config !== undefined ||
+      updateData.assistant_stt_model !== undefined || updateData.assistant_stt_config !== undefined) {
     return {
       targetMode: 'pipeline',
       modeDerivedFromPayload: true
@@ -124,6 +149,8 @@ const createAssistant = async (data) => {
     assistant_llm_config,
     assistant_tts_model, 
     assistant_tts_config,
+    assistant_stt_model,
+    assistant_stt_config,
     assistant_start_instruction,
     assistant_interaction_config,          
     assistant_end_call_enabled,            
@@ -158,6 +185,15 @@ const createAssistant = async (data) => {
 
     if (assistant_tts_model !== undefined) externalPayload.assistant_tts_model = assistant_tts_model;
     if (finalTtsConfig !== undefined) externalPayload.assistant_tts_config = finalTtsConfig;
+
+    const finalSttConfig = await buildPipelineSttConfig({
+      userId: user._id,
+      sttModel: assistant_stt_model,
+      sttConfig: assistant_stt_config
+    });
+
+    if (assistant_stt_model !== undefined) externalPayload.assistant_stt_model = assistant_stt_model;
+    if (finalSttConfig !== undefined) externalPayload.assistant_stt_config = finalSttConfig;
   }
 
   // LLM vendor is forwarded in both modes (top-down provider setting).
@@ -192,7 +228,9 @@ const createAssistant = async (data) => {
     llm_provider: provider,
     llm_config: assistant_llm_config,
     model: assistant_tts_model,
-    config: assistant_tts_config, 
+    config: assistant_tts_config,
+    stt_model: assistant_stt_model,
+    stt_config: assistant_stt_config,
     prompt: assistant_prompt,
     start_instruction: assistant_start_instruction, 
     interaction_config: interactionConfig,
@@ -287,6 +325,8 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     }
     delete externalUpdatePayload.assistant_tts_model;
     delete externalUpdatePayload.assistant_tts_config;
+    delete externalUpdatePayload.assistant_stt_model;
+    delete externalUpdatePayload.assistant_stt_config;
   } else {
     if (shouldIncludeModeInExternal) {
       externalUpdatePayload.assistant_llm_mode = 'pipeline';
@@ -317,6 +357,30 @@ const updateAssistant = async (userId, assistantId, updateData) => {
         externalUpdatePayload.assistant_tts_config = finalTtsConfig;
       }
     }
+
+    if (
+      updateData.assistant_stt_model !== undefined ||
+      updateData.assistant_stt_config !== undefined ||
+      modeDerivedFromPayload
+    ) {
+      const modelToUse = updateData.assistant_stt_model !== undefined
+        ? updateData.assistant_stt_model
+        : existingAssistant?.stt_model;
+
+      const configToUse = updateData.assistant_stt_config !== undefined
+        ? updateData.assistant_stt_config
+        : undefined;
+
+      const finalSttConfig = await buildPipelineSttConfig({
+        userId: user._id,
+        sttModel: modelToUse,
+        sttConfig: configToUse
+      });
+
+      if (finalSttConfig !== undefined) {
+        externalUpdatePayload.assistant_stt_config = finalSttConfig;
+      }
+    }
   }
 
   await callExternal(user.api_key, {
@@ -334,6 +398,8 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   if (updateData.assistant_llm_config !== undefined) localUpdateFields.llm_config = updateData.assistant_llm_config;
   if (updateData.assistant_tts_model !== undefined) localUpdateFields.model = updateData.assistant_tts_model;
   if (updateData.assistant_tts_config !== undefined) localUpdateFields.config = updateData.assistant_tts_config;
+  if (updateData.assistant_stt_model !== undefined) localUpdateFields.stt_model = updateData.assistant_stt_model;
+  if (updateData.assistant_stt_config !== undefined) localUpdateFields.stt_config = updateData.assistant_stt_config;
   if (updateData.assistant_start_instruction !== undefined) localUpdateFields.start_instruction = updateData.assistant_start_instruction;
   if (updateData.assistant_interaction_config !== undefined) {
     localUpdateFields.interaction_config = sanitizeInteractionConfigForMode(
@@ -584,6 +650,7 @@ const RESYNC_CONCURRENCY = 10; // ponytail: tune to LiveKit's rate limit
 // Re-push one assistant's config with the freshly-stored key. Returns 'skipped' when the
 // assistant uses its own key (rotation irrelevant), else 'synced'. Throws on external failure.
 const resyncOne = async (user, a, isLlm, serviceName) => {
+  const isStt = !isLlm && serviceName.endsWith('_stt');
   const payload = {};
   if (isLlm) {
     if (a.llm_config?.api_key?.trim()) return 'skipped';
@@ -591,6 +658,14 @@ const resyncOne = async (user, a, isLlm, serviceName) => {
       userId: user._id,
       llmConfig: a.llm_config,
       provider: a.llm_provider || serviceName
+    });
+  } else if (isStt) {
+    if (a.stt_config?.api_key?.trim()) return 'skipped';
+    payload.assistant_stt_model = serviceName.replace('_stt', '');
+    payload.assistant_stt_config = await buildPipelineSttConfig({
+      userId: user._id,
+      sttModel: payload.assistant_stt_model,
+      sttConfig: a.stt_config
     });
   } else {
     if (a.config?.api_key?.trim()) return 'skipped';
@@ -616,13 +691,16 @@ const resyncOne = async (user, a, isLlm, serviceName) => {
 const resyncAssistantsForIntegration = async ({ user, serviceName, onProgress }) => {
   if (!user?.api_key) return { total: 0, succeeded: 0, failed: [] }; // no external assistants possible
 
+  const isStt = serviceName.endsWith('_stt');
   const isLlm = serviceName === 'openai' || serviceName === 'gemini';
   const isTts = TTS_INTEGRATION_MODELS.includes(serviceName);
-  if (!isLlm && !isTts) return { total: 0, succeeded: 0, failed: [] };
+  if (!isLlm && !isTts && !isStt) return { total: 0, succeeded: 0, failed: [] };
 
   const query = isLlm
     ? { user_id: user._id, llm_provider: serviceName }
-    : { user_id: user._id, model: serviceName };
+    : isStt
+      ? { user_id: user._id, stt_model: serviceName.replace('_stt', '') }
+      : { user_id: user._id, model: serviceName };
   const assistants = await Assistant.find(query);
 
   const total = assistants.length;

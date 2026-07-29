@@ -22,6 +22,8 @@ const AssistantSchema = new mongoose.Schema({
   llm_config: { type: Object },
   model: { type: String },
   config: { type: Object },
+  stt_model: { type: String },
+  stt_config: { type: Object },
   prompt: { type: String, required: true },     
   start_instruction: { type: String },          
   
