@@ -32,8 +32,12 @@ MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/intvyom?retryWrites=
 ```
 
 Notes:
-- Runtime code directly reads only `PORT` and `MONGO_URI`.
-- Provider keys (for services like Sarvam/Cartesia/ElevenLabs/Mistral) are stored through integration APIs, not read from process env.
+- Runtime code directly reads only `PORT`, `MONGO_URI` and the optional `EXTERNAL_API_BASE`
+  (the LiveKit Agents host; defaults to production when unset).
+- Provider keys (TTS: `sarvam`/`cartesia`/`elevenlabs`/`mistral`, STT: `sarvam`, LLM: `openai`/`gemini`) are stored through integration APIs, not read from process env.
+- `src/modules/integration/providers.js` is the single source of truth for which `service_name` row holds which key. Adding a provider means one entry there, not a grep across modules. Run `node src/modules/integration/providers.js` for its self-check.
+- Assistant payload rules (TTS/STT pairing, mode inference, field whitelist) have their own
+  self-check: `node scripts/check-assistant-payload.js`. No DB or network needed.
 
 ## Run Locally
 
@@ -113,6 +117,25 @@ Mode-aware fields for create/update:
 - `assistant_llm_config`: LLM config object. Forwarded in **both** modes.
 - `assistant_tts_model` and `assistant_tts_config`: Pipeline TTS fields (used when mode is `pipeline`).
 
+Only known `assistant_*` fields are forwarded — the list is `ASSISTANT_FIELDS` in
+`assistant.service.js`. A typo or a retired key (e.g. `interaction_config.user_stt_provider`) is
+dropped rather than passed on for the external API to reject with `422`.
+
+Language fields, three of them, easy to confuse:
+- `assistant_tts_config.target_language_code` — **single string** (BCP-47). Sarvam TTS only.
+- `assistant_stt_config.language` — **single string** (BCP-47, or `unknown` to auto-detect).
+- `assistant_interaction_config.preferred_languages` — **array of strings**, e.g.
+  `["hi-IN", "en-US"]`. The only list-valued one. Hints the STT model for multilingual or
+  code-switched speakers; `[]` reverts to auto-detection.
+
+Update semantics (mirrors the external API's validation rules):
+- Mode only changes on an explicit `assistant_llm_mode`, or when TTS/STT fields are present.
+  Sending `assistant_llm_config` on its own is legal in pipeline mode (rotate `api_key`, pick
+  `gemini`) and leaves the stored TTS/STT config alone.
+- TTS goes out as a `model` + `config` pair; either half is enough, the other is filled in from
+  the stored assistant. Switching TTS/STT provider without a new config resets to that
+  provider's defaults rather than carrying the old provider's fields over.
+
 LLM provider (`assistant_llm_config.provider`):
 - Vendor selector, `openai` or `gemini`. Honored in both pipeline and realtime modes.
 - Top-down persistent setting: stored on the assistant (`llm_provider`), defaults to `openai`.
@@ -121,10 +144,27 @@ LLM provider (`assistant_llm_config.provider`):
   use each mode's vendor default.
 - To change vendor, send `assistant_llm_config.provider` on create or update.
 
-API key resolution (both modes):
+LLM API key resolution:
 1. `assistant_llm_config.api_key` from the request (per-assistant override), else
 2. Integration key with `service_name` = the provider (`openai` / `gemini`), else
-3. Error `Integration required` — a key must be present in the request or the Integrations module.
+3. In **pipeline** mode the field is omitted and the external API uses its own system key — a
+   missing integration is not an error. In **realtime** mode a key is mandatory:
+   `400 Integration required`.
+
+TTS API key resolution (pipeline only):
+1. Integration key with `service_name` = the TTS model (`sarvam` / `cartesia` / `elevenlabs` / `mistral`), else
+2. `400 Integration required`. Any `api_key` in `assistant_tts_config` is **overwritten** — there is
+   no per-assistant override for TTS.
+
+STT API key resolution (pipeline only):
+1. Integration key `sarvam` — the same row the TTS slot uses, since Sarvam issues one key for
+   both directions, else
+2. `400 Integration required`. As with TTS, any `api_key` in `assistant_stt_config` is overwritten.
+3. `assistant_stt_model: "native"` needs no key at all; its config is forwarded verbatim.
+
+One provider, one row. The map of model → `service_name` lives in
+`src/modules/integration/providers.js`; `POST /api/integration/store` rejects any
+`service_name` outside it with `400`.
 
 Other behavior:
 - `assistant_interaction_config.filler_words` is always forced to `false` in realtime mode.
@@ -143,7 +183,9 @@ Other behavior:
 
 ### Integration (`/api/integration`)
 
-- `POST /store` - Store or update provider API key. Returns immediately; a background re-sync
+- `POST /store` - Store or update provider API key. Body: `user_id`, `service_name`, `api_key`;
+  `service_type` is optional and derived from `service_name` when omitted. A `service_name`
+  the provider map doesn't know returns `400`. Returns immediately; a background re-sync
   (below) starts automatically. Response includes `resync: { job_id, status: "running" }`.
 - `GET /get?user_id=...&service_name=...` - Retrieve provider API key.
 - `GET /resync-status?user_id=...&service_name=...` - Current re-sync job:
@@ -158,8 +200,10 @@ Other behavior:
 create/update time, so rotating a key would otherwise leave old assistants on the dead key. When
 you `POST /store` a new/rotated key, a **background job** re-pushes the new key to every existing
 assistant that uses that provider — LLM keys (`openai`/`gemini`) match by `llm_provider`, TTS keys
-(`sarvam`/`cartesia`/`elevenlabs`/`mistral`) match by TTS model. Assistants created with their own
-per-request `assistant_llm_config.api_key` / `assistant_tts_config.api_key` are left untouched.
+(`sarvam`/`cartesia`/`elevenlabs`/`mistral`) match by `tts_model`, and the `sarvam` key also
+matches by `stt_model`. A shared key covers every slot it backs: rotating `sarvam` re-pushes
+**both** the TTS and the STT config, in one request per assistant. Assistants created with their own per-request
+`assistant_llm_config.api_key` / `assistant_tts_config.api_key` are left untouched.
 
 Frontend flow: after `POST /store` (or `POST /resync`), poll `GET /resync-status` every ~2s until
 `status !== "running"`; show `processed / total` progress, then `succeeded` and the `failed[]`
@@ -173,6 +217,28 @@ node scripts/backfill-llm-provider.js
 ```
 
 Idempotent, local-DB only (sets `llm_provider` from the stored `llm_config.provider`, else `openai`).
+
+**One-time TTS field rename (run once, before deploy):** the assistant's TTS fields are stored as
+`tts_model` / `tts_config`, matching `stt_model` / `stt_config`. They used to be `model` / `config`.
+The re-sync query matches on `tts_model`, so legacy documents stay invisible to it until renamed:
+
+```bash
+node scripts/migrate-tts-field-names.js
+```
+
+Idempotent, local-DB only. **Breaking for API consumers** — the `Assistant` response object (and
+`local_data` on update) now carries `tts_model` / `tts_config` instead of `model` / `config`.
+
+**One-time `sarvam_stt` cleanup (run once after deploy):** STT now reads the ordinary `sarvam`
+row, so `sarvam_stt` is gone from the provider map. Any leftover row is unreachable, and its
+re-sync job would keep appearing in `GET /resync-status` for a provider that no longer exists:
+
+```bash
+node scripts/drop-sarvam-stt-rows.js
+```
+
+Idempotent, local-DB only. Expect a count of `0` unless a `sarvam_stt` row was created by hand —
+the frontend never offered it. Storing that name now returns `400`.
 
 ### Tool (`/api/tool`)
 

@@ -2,8 +2,9 @@ const axios = require('axios');
 const https = require('https');
 const User = require('../auth/user.model');
 
-// External API shares one base host across every module.
-const EXTERNAL_BASE = 'https://api-livekit-vyom.indusnettechnologies.com';
+// External API shares one base host across every module. Override per environment with
+// EXTERNAL_API_BASE (staging, a local mock); the production host stays the default.
+const EXTERNAL_BASE = process.env.EXTERNAL_API_BASE || 'https://api-livekit-vyom.indusnettechnologies.com';
 
 // One reusable TLS agent (external cert isn't verified). Stateless — no need to
 // allocate a fresh https.Agent per request. ponytail: fine as a shared const.
@@ -42,18 +43,24 @@ const callExternal = async (
       url: `${EXTERNAL_BASE}${path}`,
       ...(data !== undefined && { data }),
       ...(params !== undefined && { params }),
-      headers: { Authorization: `Bearer ${apiKey}`, ...headers },
+      // Authorization last: a caller-supplied header must not be able to clobber the token.
+      headers: { ...headers, Authorization: `Bearer ${apiKey}` },
       httpsAgent: agent,
     });
     return response.data;
   } catch (error) {
     if (error.response) {
-      throw new Error(
+      const wrapped = new Error(
         extractMessage
           ? extractMessage(error.response.data)
-          : error.response.data.message || fallback
+          : error.response.data?.message || fallback
       );
+      // Carry the upstream status so controllers can pass a 400/404/422 straight through
+      // instead of flattening every external rejection into a 500.
+      wrapped.status = error.response.status;
+      throw wrapped;
     }
+    // Network failures carry no status — controllers fall back to 500.
     throw new Error(networkFallback);
   }
 };
@@ -61,8 +68,16 @@ const callExternal = async (
 // Load a user and require they have an API key (the guard duplicated across services).
 const getUserWithKey = async (userId) => {
   const user = await User.findById(userId);
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('User does not have an API Key. Please generate one first.');
+  if (!user) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+  if (!user.api_key) {
+    const error = new Error('User does not have an API Key. Please generate one first.');
+    error.status = 400;
+    throw error;
+  }
   return user;
 };
 

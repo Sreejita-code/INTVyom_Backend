@@ -27,7 +27,9 @@ const store = async (req, res) => {
       resync
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    // Validation throws (unknown service_name) carry error.status = 400; anything else is
+    // a genuine failure and must not masquerade as a bad request.
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 

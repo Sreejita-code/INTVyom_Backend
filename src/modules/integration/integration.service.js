@@ -2,6 +2,7 @@ const Integration = require('./integration.model');
 const ResyncJob = require('./resync-job.model');
 const User = require('../auth/user.model');
 const assistantService = require('../assistant/assistant.service');
+const { serviceTypeFor, SERVICE_NAMES } = require('./providers');
 
 // A running job whose progress hasn't advanced in this long is treated as interrupted
 // (e.g. the process restarted mid-run) so the caller knows to re-trigger.
@@ -53,11 +54,19 @@ const storeApiKey = async (data) => {
   if (!user) throw new Error('User not found');
 
   const normalizedServiceName = service_name.toLowerCase();
+  // Reject names the provider map doesn't know. Storing one used to succeed and then fail
+  // much later at call time with "Integration required" — a typo is cheaper to catch here.
+  if (!SERVICE_NAMES.includes(normalizedServiceName)) {
+    const error = new Error(`Unknown service_name. Expected one of: ${SERVICE_NAMES.join(', ')}`);
+    error.status = 400;
+    throw error;
+  }
+
+  // Type comes from the provider map, so e.g. `openai` is stored as LLM. The guard above
+  // means serviceTypeFor always resolves, so there is no catch-all default to fall back on.
   const normalizedServiceType = service_type
     ? service_type.toUpperCase()
-    : normalizedServiceName === 'gemini' ? 'LLM'
-      : normalizedServiceName === 'sarvam_stt' ? 'STT'
-      : 'TTS';
+    : serviceTypeFor(normalizedServiceName);
 
   // We use findOneAndUpdate with upsert: true. 
   // If a key for this user + service_name exists, it updates it. If not, it creates it.
@@ -75,7 +84,10 @@ const storeApiKey = async (data) => {
     {
       new: true, // Return the updated document
       upsert: true, // Create if it doesn't exist
-      setDefaultsOnInsert: true
+      setDefaultsOnInsert: true,
+      // Without this, findOneAndUpdate skips the schema's service_type enum and an
+      // arbitrary caller-supplied type would persist.
+      runValidators: true
     }
   );
 

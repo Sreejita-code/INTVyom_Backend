@@ -1,18 +1,48 @@
-const axios = require('axios');
-const https = require('https');
 const Assistant = require('./assistant.model');
-const User = require('../auth/user.model');
-const Integration = require('../integration/integration.model');
 const { callExternal, getUserWithKey, findByLocalOrExternalId } = require('../shared/remote');
+const { keyNameFor, resolveApiKey, classify, modelsFor } = require('../integration/providers');
 
-const TTS_INTEGRATION_MODELS = ['sarvam', 'cartesia', 'elevenlabs', 'mistral'];
-const STT_INTEGRATION_MODELS = ['sarvam'];
+const badRequest = (message) => {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+};
+
+// Every assistant_* field the external API accepts, in create-payload order. Drives both the
+// create destructure and the update whitelist: forwarding an unknown or retired key (the removed
+// assistant_interaction_config.user_stt_provider, a client typo) makes the external API answer 422.
+const ASSISTANT_FIELDS = [
+  'assistant_name',
+  'assistant_description',
+  'assistant_prompt',
+  'assistant_llm_mode',
+  'assistant_llm_config',
+  'assistant_tts_model',
+  'assistant_tts_config',
+  'assistant_stt_model',
+  'assistant_stt_config',
+  'assistant_start_instruction',
+  'assistant_interaction_config',
+  'assistant_end_call_enabled',
+  'assistant_end_call_trigger_phrase',
+  'assistant_end_call_agent_message',
+  'assistant_end_call_url',
+  'assistant_greeting_audio',
+];
+
+const pickAssistantFields = (data) => {
+  const picked = {};
+  for (const field of ASSISTANT_FIELDS) {
+    if (data[field] !== undefined) picked[field] = data[field];
+  }
+  return picked;
+};
 
 const normalizeMode = (mode, defaultMode = 'pipeline') => {
   if (mode === undefined || mode === null || mode === '') return defaultMode;
   const normalized = String(mode).toLowerCase();
   if (normalized !== 'pipeline' && normalized !== 'realtime') {
-    throw new Error("assistant_llm_mode must be either 'pipeline' or 'realtime'");
+    throw badRequest("assistant_llm_mode must be either 'pipeline' or 'realtime'");
   }
   return normalized;
 };
@@ -26,24 +56,16 @@ const sanitizeInteractionConfigForMode = (interactionConfig, mode) => {
   return sanitized;
 };
 
+// TTS/STT keys always come from the Integrations module — any caller-supplied api_key
+// is overwritten. Models with no entry in the provider map (e.g. stt `native`) need no
+// key, so their config is forwarded verbatim.
 const buildPipelineTtsConfig = async ({ userId, ttsModel, ttsConfig }) => {
   const finalTtsConfig = ttsConfig ? { ...ttsConfig } : undefined;
 
-  if (TTS_INTEGRATION_MODELS.includes(ttsModel?.toLowerCase())) {
-    const integration = await Integration.findOne({
-      user_id: userId,
-      service_name: ttsModel.toLowerCase()
-    });
-
-    if (!integration || !integration.api_key) {
-      throw new Error(`Integration required: Please integrate your ${ttsModel} API key in the Integrations module first.`);
-    }
-
-    if (!finalTtsConfig) {
-      return { api_key: integration.api_key };
-    }
-
-    finalTtsConfig.api_key = integration.api_key;
+  if (keyNameFor('tts', ttsModel)) {
+    const apiKey = await resolveApiKey({ userId, kind: 'tts', name: ttsModel, label: ttsModel });
+    if (!finalTtsConfig) return { api_key: apiKey };
+    finalTtsConfig.api_key = apiKey;
   }
 
   return finalTtsConfig;
@@ -52,21 +74,10 @@ const buildPipelineTtsConfig = async ({ userId, ttsModel, ttsConfig }) => {
 const buildPipelineSttConfig = async ({ userId, sttModel, sttConfig }) => {
   const finalSttConfig = sttConfig ? { ...sttConfig } : undefined;
 
-  if (STT_INTEGRATION_MODELS.includes(sttModel?.toLowerCase())) {
-    const integration = await Integration.findOne({
-      user_id: userId,
-      service_name: `${sttModel.toLowerCase()}_stt`
-    });
-
-    if (!integration || !integration.api_key) {
-      throw new Error(`Integration required: Please integrate your ${sttModel} STT API key in the Integrations module first.`);
-    }
-
-    if (!finalSttConfig) {
-      return { api_key: integration.api_key };
-    }
-
-    finalSttConfig.api_key = integration.api_key;
+  if (keyNameFor('stt', sttModel)) {
+    const apiKey = await resolveApiKey({ userId, kind: 'stt', name: sttModel, label: sttModel });
+    if (!finalSttConfig) return { api_key: apiKey };
+    finalSttConfig.api_key = apiKey;
   }
 
   return finalSttConfig;
@@ -80,46 +91,39 @@ const resolveProvider = (llmConfig, existing) => {
     ?? existing?.llm_provider
     ?? existing?.llm_config?.provider;
   const provider = raw ? String(raw).toLowerCase() : 'openai';
-  if (provider !== 'openai' && provider !== 'gemini') {
-    throw new Error("assistant_llm_config.provider must be 'openai' or 'gemini'");
+  if (!keyNameFor('llm', provider)) {
+    const allowed = modelsFor('llm').map((p) => `'${p}'`).join(' or ');
+    throw badRequest(`assistant_llm_config.provider must be ${allowed}`);
   }
   return provider;
 };
 
 // Build the assistant_llm_config sent to the external API for either mode.
-// Injects the resolved provider and resolves the api_key: caller-supplied key wins,
-// otherwise pull the user's integrated key for that provider (required — throws if absent).
-const buildLlmConfig = async ({ userId, llmConfig, provider }) => {
+// Injects the resolved provider and resolves the api_key: caller-supplied key wins, otherwise
+// pull the user's integrated key for that provider. In pipeline mode the key is optional — the
+// external API falls back to its own system key — so a missing integration is not an error
+// there; the field is simply omitted. Realtime requires a key.
+const buildLlmConfig = async ({ userId, llmConfig, provider, keyRequired = true }) => {
   const finalLlmConfig = { ...(llmConfig || {}), provider };
 
   const hasPerAssistantKey = typeof finalLlmConfig.api_key === 'string' && finalLlmConfig.api_key.trim() !== '';
   if (!hasPerAssistantKey) {
-    const integration = await Integration.findOne({
-      user_id: userId,
-      service_name: provider // 'openai' or 'gemini'
-    });
-
-    if (!integration || !integration.api_key) {
-      throw new Error(`Integration required: Please integrate your ${provider} API key in the Integrations module first.`);
-    }
-
-    finalLlmConfig.api_key = integration.api_key;
+    const apiKey = await resolveApiKey({ userId, kind: 'llm', name: provider, required: keyRequired });
+    if (apiKey) finalLlmConfig.api_key = apiKey;
+    else delete finalLlmConfig.api_key;
   }
 
   return finalLlmConfig;
 };
 
+// Which mode a PATCH targets. Only an explicit assistant_llm_mode or the presence of TTS/STT
+// fields implies a mode — assistant_llm_config does NOT. Per the external API's update rules it
+// is legal on its own in pipeline mode (to set api_key or pick gemini) and the stored TTS config
+// is preserved, so inferring `realtime` from it would silently flip mode and wipe TTS/STT.
 const inferTargetModeForUpdate = (updateData, existingMode) => {
   if (updateData.assistant_llm_mode !== undefined) {
     return {
       targetMode: normalizeMode(updateData.assistant_llm_mode),
-      modeDerivedFromPayload: true
-    };
-  }
-
-  if (updateData.assistant_llm_config !== undefined) {
-    return {
-      targetMode: 'realtime',
       modeDerivedFromPayload: true
     };
   }
@@ -136,6 +140,29 @@ const inferTargetModeForUpdate = (updateData, existingMode) => {
     targetMode: normalizeMode(existingMode, 'pipeline'),
     modeDerivedFromPayload: false
   };
+};
+
+// What model + config a provider slot ('tts' | 'stt') should be updated with: the caller's value
+// wins, otherwise fall back to what is already stored on the assistant. Seeding the config from
+// the DB matters — sending only assistant_tts_model would otherwise drop the stored speaker /
+// voice_id / target_language_code. `model: undefined` means the slot was never configured and
+// the caller sent nothing, so there is nothing to send.
+const resolvePairForUpdate = (updateData, existing, kind) => {
+  const storedModel = existing?.[`${kind}_model`] ?? undefined;
+
+  const model = updateData[`assistant_${kind}_model`] !== undefined
+    ? updateData[`assistant_${kind}_model`]
+    : storedModel;
+
+  let config = updateData[`assistant_${kind}_config`];
+  if (config === undefined) {
+    // The stored config belongs to the stored provider — carry it over only while the provider
+    // is unchanged. Switching provider with no new config means "use the new one's defaults";
+    // forwarding e.g. a Sarvam `language` to `native` would be rejected.
+    config = model === storedModel ? existing?.[`${kind}_config`] : undefined;
+  }
+
+  return { model: model ?? undefined, config: config ?? undefined };
 };
 
 // --- 1. Create Assistant ---
@@ -196,11 +223,13 @@ const createAssistant = async (data) => {
     if (finalSttConfig !== undefined) externalPayload.assistant_stt_config = finalSttConfig;
   }
 
-  // LLM vendor is forwarded in both modes (top-down provider setting).
+  // LLM vendor is forwarded in both modes (top-down provider setting). The key is only
+  // mandatory in realtime — pipeline falls back to the external API's own system key.
   externalPayload.assistant_llm_config = await buildLlmConfig({
     userId: user._id,
     llmConfig: assistant_llm_config,
-    provider
+    provider,
+    keyRequired: mode === 'realtime'
   });
 
   if (assistant_start_instruction) externalPayload.assistant_start_instruction = assistant_start_instruction;
@@ -227,8 +256,8 @@ const createAssistant = async (data) => {
     llm_mode: mode,
     llm_provider: provider,
     llm_config: assistant_llm_config,
-    model: assistant_tts_model,
-    config: assistant_tts_config,
+    tts_model: assistant_tts_model,
+    tts_config: assistant_tts_config,
     stt_model: assistant_stt_model,
     stt_config: assistant_stt_config,
     prompt: assistant_prompt,
@@ -258,23 +287,12 @@ const listAssistants = async (userId, queryParams = {}) => {
 const getAssistantDetails = async (userId, assistantId) => {
   const user = await getUserWithKey(userId);
 
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false });
-    const response = await axios.get(
-      `https://api-livekit-vyom.indusnettechnologies.com/assistant/details/${assistantId}`,
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        httpsAgent: agent
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (error.response) {
-      if (error.response.status === 404) throw new Error('Assistant not found in external system');
-      throw new Error(error.response.data.message || 'Failed to fetch assistant details');
-    }
-    throw new Error('Failed to contact external service');
-  }
+  // callExternal tags the thrown error with the upstream status, so a 404 here reaches
+  // the client as a 404 without a message-string comparison.
+  return callExternal(user.api_key, {
+    path: `/assistant/details/${assistantId}`,
+    fallback: 'Failed to fetch assistant details',
+  });
 };
 
 // --- 4. Update Assistant ---
@@ -293,7 +311,8 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   // (every real mode switch sets the mode) — not on unrelated name/TTS edits.
   const touchesLlm = updateData.assistant_llm_config !== undefined || updateData.assistant_llm_mode !== undefined;
 
-  const externalUpdatePayload = { ...updateData };
+  // Whitelist, not a spread: only fields the external API knows about go out.
+  const externalUpdatePayload = pickAssistantFields(updateData);
 
   if (updateData.assistant_interaction_config !== undefined) {
     externalUpdatePayload.assistant_interaction_config = sanitizeInteractionConfigForMode(
@@ -311,7 +330,8 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     externalUpdatePayload.assistant_llm_config = await buildLlmConfig({
       userId: user._id,
       llmConfig: llmConfigToUse,
-      provider
+      provider,
+      keyRequired: targetMode === 'realtime'
     });
   } else {
     delete externalUpdatePayload.assistant_llm_config;
@@ -334,51 +354,54 @@ const updateAssistant = async (userId, assistantId, updateData) => {
       delete externalUpdatePayload.assistant_llm_mode;
     }
 
+    // TTS must go out as a pair — the external API rejects assistant_tts_config without
+    // assistant_tts_model (there is no discriminator to validate the config against).
     if (
       updateData.assistant_tts_model !== undefined ||
       updateData.assistant_tts_config !== undefined ||
       modeDerivedFromPayload
     ) {
-      const modelToUse = updateData.assistant_tts_model !== undefined
-        ? updateData.assistant_tts_model
-        : existingAssistant?.model;
+      const { model: ttsModel, config: ttsConfig } = resolvePairForUpdate(updateData, existingAssistant, 'tts');
 
-      const configToUse = updateData.assistant_tts_config !== undefined
-        ? updateData.assistant_tts_config
-        : undefined;
-
-      const finalTtsConfig = await buildPipelineTtsConfig({
-        userId: user._id,
-        ttsModel: modelToUse,
-        ttsConfig: configToUse
-      });
-
-      if (finalTtsConfig !== undefined) {
-        externalUpdatePayload.assistant_tts_config = finalTtsConfig;
+      if (ttsModel === undefined) {
+        // Never configured and the caller sent none: send neither half.
+        delete externalUpdatePayload.assistant_tts_model;
+        delete externalUpdatePayload.assistant_tts_config;
+      } else {
+        externalUpdatePayload.assistant_tts_model = ttsModel;
+        // `?? {}` keeps the pair intact; every real TTS model resolves a key, so this only
+        // fires for an unknown model, which the external API then rejects with its own message.
+        externalUpdatePayload.assistant_tts_config = await buildPipelineTtsConfig({
+          userId: user._id,
+          ttsModel,
+          ttsConfig
+        }) ?? {};
       }
     }
 
+    // STT is looser: the model alone is legal (it resets that provider's defaults), but a
+    // lone config is rejected. `native` resolves no config, so it goes out as model-only.
     if (
       updateData.assistant_stt_model !== undefined ||
       updateData.assistant_stt_config !== undefined ||
       modeDerivedFromPayload
     ) {
-      const modelToUse = updateData.assistant_stt_model !== undefined
-        ? updateData.assistant_stt_model
-        : existingAssistant?.stt_model;
+      const { model: sttModel, config: sttConfig } = resolvePairForUpdate(updateData, existingAssistant, 'stt');
 
-      const configToUse = updateData.assistant_stt_config !== undefined
-        ? updateData.assistant_stt_config
-        : undefined;
+      if (sttModel === undefined) {
+        delete externalUpdatePayload.assistant_stt_model;
+        delete externalUpdatePayload.assistant_stt_config;
+      } else {
+        externalUpdatePayload.assistant_stt_model = sttModel;
 
-      const finalSttConfig = await buildPipelineSttConfig({
-        userId: user._id,
-        sttModel: modelToUse,
-        sttConfig: configToUse
-      });
+        const finalSttConfig = await buildPipelineSttConfig({
+          userId: user._id,
+          sttModel,
+          sttConfig
+        });
 
-      if (finalSttConfig !== undefined) {
-        externalUpdatePayload.assistant_stt_config = finalSttConfig;
+        if (finalSttConfig !== undefined) externalUpdatePayload.assistant_stt_config = finalSttConfig;
+        else delete externalUpdatePayload.assistant_stt_config;
       }
     }
   }
@@ -396,8 +419,8 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   if (updateData.assistant_description !== undefined) localUpdateFields.description = updateData.assistant_description;
   if (updateData.assistant_prompt !== undefined) localUpdateFields.prompt = updateData.assistant_prompt;
   if (updateData.assistant_llm_config !== undefined) localUpdateFields.llm_config = updateData.assistant_llm_config;
-  if (updateData.assistant_tts_model !== undefined) localUpdateFields.model = updateData.assistant_tts_model;
-  if (updateData.assistant_tts_config !== undefined) localUpdateFields.config = updateData.assistant_tts_config;
+  if (updateData.assistant_tts_model !== undefined) localUpdateFields.tts_model = updateData.assistant_tts_model;
+  if (updateData.assistant_tts_config !== undefined) localUpdateFields.tts_config = updateData.assistant_tts_config;
   if (updateData.assistant_stt_model !== undefined) localUpdateFields.stt_model = updateData.assistant_stt_model;
   if (updateData.assistant_stt_config !== undefined) localUpdateFields.stt_config = updateData.assistant_stt_config;
   if (updateData.assistant_start_instruction !== undefined) localUpdateFields.start_instruction = updateData.assistant_start_instruction;
@@ -452,6 +475,15 @@ const deleteAssistant = async (userId, assistantId) => {
   };
 };
 
+// One external call-logs fetch. Shared by the raw log listing and both billable-minutes
+// aggregators, which page through the same endpoint.
+const fetchCallLogs = (apiKey, externalAssistantId, params) =>
+  callExternal(apiKey, {
+    path: `/assistant/call-logs/${externalAssistantId}`,
+    params,
+    fallback: 'Failed to fetch call logs',
+  });
+
 // --- 6. Get Call Logs ---
 const getCallLogs = async (userId, assistantId, queryParams) => {
   const user = await getUserWithKey(userId);
@@ -459,24 +491,7 @@ const getCallLogs = async (userId, assistantId, queryParams) => {
   const assistant = await findByLocalOrExternalId(Assistant, assistantId, userId, 'external_assistant_id');
   if (!assistant) throw new Error('Assistant not found');
 
-  try {
-    const agent = new https.Agent({ rejectUnauthorized: false }); 
-    const response = await axios.get(
-      `https://api-livekit-vyom.indusnettechnologies.com/assistant/call-logs/${assistant.external_assistant_id}`,
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        params: queryParams, 
-        httpsAgent: agent 
-      }
-    );
-    return response.data;
-  } catch (error) {
-    console.error("🚨 CALL LOGS ERROR:", error.response?.data || error.message || error); 
-    if (error.response) {
-      throw new Error(error.response.data.message || 'Failed to fetch call logs');
-    }
-    throw new Error('Failed to contact external service');
-  }
+  return fetchCallLogs(user.api_key, assistant.external_assistant_id, queryParams);
 };
 
 // --- 7. Get Total Billable Minutes ---
@@ -494,8 +509,6 @@ const getTotalBillableDuration = async (userId, assistantId, queryParams) => {
   let currentPage = 1;
   let totalPages = 1;
 
-  const agent = new https.Agent({ rejectUnauthorized: false });
-
   // Loop through all paginated results to ensure we sum up everything accurately
   do {
     // We only pass start_date, end_date to external API, along with page/limit
@@ -503,21 +516,14 @@ const getTotalBillableDuration = async (userId, assistantId, queryParams) => {
       page: currentPage,
       limit: 100, // Fetch maximum per page to reduce the number of external API calls
     };
-    
+
     if (queryParams.start_date) apiParams.start_date = queryParams.start_date;
     if (queryParams.end_date) apiParams.end_date = queryParams.end_date;
 
-    const response = await axios.get(
-      `https://api-livekit-vyom.indusnettechnologies.com/assistant/call-logs/${assistant.external_assistant_id}`,
-      {
-        headers: { 'Authorization': `Bearer ${user.api_key}` },
-        params: apiParams,
-        httpsAgent: agent
-      }
-    );
+    const response = await fetchCallLogs(user.api_key, assistant.external_assistant_id, apiParams);
 
-    const callLogsData = response.data?.data;
-    
+    const callLogsData = response?.data;
+
     if (callLogsData && callLogsData.logs) {
       // Filter logs by the specific to_number and sum up billable_duration_minutes
       const filteredLogs = callLogsData.logs.filter(log => log.to_number === targetNumber);
@@ -541,7 +547,8 @@ const getTotalBillableDuration = async (userId, assistantId, queryParams) => {
     data: {
       assistant_id: assistant.external_assistant_id,
       to_number: targetNumber,
-      total_billable_duration_minutes: totalBillableMinutes,
+      // Same name as the platform-wise endpoint — one quantity, one key.
+      total_billable_minutes: totalBillableMinutes,
       timespan_evaluated: {
         start_date: queryParams.start_date || 'lifetime',
         end_date: queryParams.end_date || 'lifetime'
@@ -566,7 +573,6 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
   }
 
   const platformBillableMap = {};
-  const agent = new https.Agent({ rejectUnauthorized: false });
 
   // Loop through all assistants
   for (const assistant of assistants) {
@@ -584,17 +590,10 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
       if (queryParams.end_date) apiParams.end_date = queryParams.end_date;
 
       try {
-        const response = await axios.get(
-          `https://api-livekit-vyom.indusnettechnologies.com/assistant/call-logs/${assistant.external_assistant_id}`,
-          {
-            headers: { 'Authorization': `Bearer ${user.api_key}` },
-            params: apiParams,
-            httpsAgent: agent
-          }
-        );
+        const response = await fetchCallLogs(user.api_key, assistant.external_assistant_id, apiParams);
 
-        const callLogsData = response.data?.data;
-        
+        const callLogsData = response?.data;
+
         if (callLogsData && callLogsData.logs) {
           // Aggregate by platform_number
           for (const log of callLogsData.logs) {
@@ -612,7 +611,8 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
           break; // Exit if no logs found
         }
       } catch (error) {
-        console.error(`Failed to fetch logs for assistant ${assistant.external_assistant_id}:`, error.response?.data?.message || error.message);
+        // callExternal already flattens the upstream message onto the Error.
+        console.error(`Failed to fetch logs for assistant ${assistant.external_assistant_id}:`, error.message);
         break; // Break the while loop to skip to the next assistant on error
       }
       
@@ -642,40 +642,46 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
 // --- Re-sync assistants after an Integration key is rotated ---
 // A provider key is snapshotted into each assistant on the external side at create/update time.
 // When the user stores a new key, push it to every existing assistant that uses that provider
-// (LLM matched by llm_provider, TTS matched by model). Assistants that carry their own
+// (LLM matched by llm_provider, STT by stt_model, TTS by tts_model). Assistants that carry their own
 // per-assistant api_key are left alone — an Integration key rotation is irrelevant to them.
 
 const RESYNC_CONCURRENCY = 10; // ponytail: tune to LiveKit's rate limit
 
-// Re-push one assistant's config with the freshly-stored key. Returns 'skipped' when the
-// assistant uses its own key (rotation irrelevant), else 'synced'. Throws on external failure.
-const resyncOne = async (user, a, isLlm, serviceName) => {
-  const isStt = !isLlm && serviceName.endsWith('_stt');
+// Re-push one assistant's config with the freshly-stored key. `kinds` is the set of
+// slots this rotation affects for this assistant — a shared vendor key (sarvam backs
+// both TTS and STT) can touch more than one, and they go out in a single PATCH.
+// Returns 'skipped' when every affected slot carries its own key, else 'synced'.
+const resyncOne = async (user, a, kinds) => {
   const payload = {};
-  if (isLlm) {
-    if (a.llm_config?.api_key?.trim()) return 'skipped';
-    payload.assistant_llm_config = await buildLlmConfig({
-      userId: user._id,
-      llmConfig: a.llm_config,
-      provider: a.llm_provider || serviceName
-    });
-  } else if (isStt) {
-    if (a.stt_config?.api_key?.trim()) return 'skipped';
-    payload.assistant_stt_model = serviceName.replace('_stt', '');
-    payload.assistant_stt_config = await buildPipelineSttConfig({
-      userId: user._id,
-      sttModel: payload.assistant_stt_model,
-      sttConfig: a.stt_config
-    });
-  } else {
-    if (a.config?.api_key?.trim()) return 'skipped';
-    payload.assistant_tts_model = a.model;
-    payload.assistant_tts_config = await buildPipelineTtsConfig({
-      userId: user._id,
-      ttsModel: a.model,
-      ttsConfig: a.config
-    });
+
+  for (const kind of kinds) {
+    if (kind === 'llm') {
+      if (a.llm_config?.api_key?.trim()) continue;
+      payload.assistant_llm_config = await buildLlmConfig({
+        userId: user._id,
+        llmConfig: a.llm_config,
+        provider: a.llm_provider
+      });
+    } else if (kind === 'stt') {
+      if (a.stt_config?.api_key?.trim()) continue;
+      payload.assistant_stt_model = a.stt_model;
+      payload.assistant_stt_config = await buildPipelineSttConfig({
+        userId: user._id,
+        sttModel: a.stt_model,
+        sttConfig: a.stt_config
+      });
+    } else {
+      if (a.tts_config?.api_key?.trim()) continue;
+      payload.assistant_tts_model = a.tts_model;
+      payload.assistant_tts_config = await buildPipelineTtsConfig({
+        userId: user._id,
+        ttsModel: a.tts_model,
+        ttsConfig: a.tts_config
+      });
+    }
   }
+
+  if (Object.keys(payload).length === 0) return 'skipped';
 
   await callExternal(user.api_key, {
     method: 'patch',
@@ -691,17 +697,22 @@ const resyncOne = async (user, a, isLlm, serviceName) => {
 const resyncAssistantsForIntegration = async ({ user, serviceName, onProgress }) => {
   if (!user?.api_key) return { total: 0, succeeded: 0, failed: [] }; // no external assistants possible
 
-  const isStt = serviceName.endsWith('_stt');
-  const isLlm = serviceName === 'openai' || serviceName === 'gemini';
-  const isTts = TTS_INTEGRATION_MODELS.includes(serviceName);
-  if (!isLlm && !isTts && !isStt) return { total: 0, succeeded: 0, failed: [] };
+  // What this row is good for comes from the provider map, so a shared key rotation
+  // (e.g. `sarvam`) reaches both the TTS and the STT slot instead of only TTS.
+  const targets = classify(serviceName);
+  if (!targets) return { total: 0, succeeded: 0, failed: [] };
 
-  const query = isLlm
-    ? { user_id: user._id, llm_provider: serviceName }
-    : isStt
-      ? { user_id: user._id, stt_model: serviceName.replace('_stt', '') }
-      : { user_id: user._id, model: serviceName };
-  const assistants = await Assistant.find(query);
+  const MATCH_FIELD = { llm: 'llm_provider', stt: 'stt_model', tts: 'tts_model' };
+  const jobs = new Map(); // assistant id -> { assistant, kinds } so each gets one PATCH
+  for (const { kind, model } of targets) {
+    const matched = await Assistant.find({ user_id: user._id, [MATCH_FIELD[kind]]: model });
+    for (const a of matched) {
+      const id = String(a._id);
+      if (!jobs.has(id)) jobs.set(id, { assistant: a, kinds: [] });
+      jobs.get(id).kinds.push(kind);
+    }
+  }
+  const assistants = [...jobs.values()];
 
   const total = assistants.length;
   let processed = 0;
@@ -711,13 +722,13 @@ const resyncAssistantsForIntegration = async ({ user, serviceName, onProgress })
 
   for (let i = 0; i < assistants.length; i += RESYNC_CONCURRENCY) {
     const batch = assistants.slice(i, i + RESYNC_CONCURRENCY);
-    const results = await Promise.allSettled(batch.map(a => resyncOne(user, a, isLlm, serviceName)));
+    const results = await Promise.allSettled(batch.map(j => resyncOne(user, j.assistant, j.kinds)));
     results.forEach((r, k) => {
       processed++;
       if (r.status === 'fulfilled') {
         if (r.value === 'synced') succeeded++;
       } else {
-        failed.push({ assistant_id: batch[k].external_assistant_id, error: r.reason.message });
+        failed.push({ assistant_id: batch[k].assistant.external_assistant_id, error: r.reason.message });
       }
     });
     if (onProgress) await onProgress({ total, processed, succeeded, failed });
@@ -735,5 +746,10 @@ module.exports = {
   getCallLogs,
   getTotalBillableDuration,
   getPlatformWiseBillableMinutes,
-  resyncAssistantsForIntegration
+  resyncAssistantsForIntegration,
+  // Pure payload helpers — exported for scripts/check-assistant-payload.js.
+  ASSISTANT_FIELDS,
+  pickAssistantFields,
+  inferTargetModeForUpdate,
+  resolvePairForUpdate
 };

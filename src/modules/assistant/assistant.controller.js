@@ -11,7 +11,9 @@ const create = async (req, res) => {
       assistant: assistant
     });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    // Validation throws (bad mode/provider, missing integration) and external rejections both
+    // carry error.status — only genuine failures fall through to 500.
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -38,7 +40,7 @@ const list = async (req, res) => {
     res.status(200).json(result);
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -60,10 +62,7 @@ const details = async (req, res) => {
     res.status(200).json(result);
 
   } catch (error) {
-    if (error.message === 'Assistant not found in external system') {
-      return res.status(404).json({ error: error.message });
-    }
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -85,7 +84,9 @@ const update = async (req, res) => {
     res.status(200).json(result);
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // Validation throws from the service (missing integration, bad provider/mode) carry
+    // error.status = 400 — only genuine failures fall through to 500.
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -108,7 +109,7 @@ const deleteAssistant = async (req, res) => {
     res.status(200).json(result);
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -143,7 +144,7 @@ const getCallLogs = async (req, res) => {
     
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -174,7 +175,7 @@ const getBillableMinutes = async (req, res) => {
     
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -195,7 +196,7 @@ const getPlatformWiseBillableMinutes = async (req, res) => {
     
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 
@@ -263,7 +264,7 @@ const downloadPlatformWiseBillableMinutes = async (req, res) => {
     res.status(200).end();
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 };
 

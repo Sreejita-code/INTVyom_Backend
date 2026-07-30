@@ -260,46 +260,31 @@ paths:
                   default: pipeline
                   example: "pipeline"
                 assistant_llm_config:
-                  type: object
-                  description: Required when mode=realtime
-                  properties:
-                    provider:
-                      type: string
-                      example: "gemini"
-                    api_key:
-                      type: string
-                      example: "AIza..."
+                  allOf:
+                    - $ref: '#/components/schemas/AssistantLlmConfig'
+                    - description: Required when mode=realtime, optional in pipeline.
                 assistant_tts_model:
                   type: string
-                  description: Used in pipeline mode
+                  description: Required in pipeline mode. Must be sent together with assistant_tts_config.
                   enum: [sarvam, cartesia, elevenlabs, mistral]
                   example: "sarvam"
                 assistant_tts_config:
-                  type: object
-                  description: TTS configuration (varies by model)
+                  $ref: '#/components/schemas/AssistantTtsConfig'
                 assistant_stt_model:
                   type: string
-                  description: User-transcription source (pipeline mode only)
+                  description: >
+                    User-transcription source (pipeline mode only). `sarvam` resolves its key
+                    from the `sarvam` integration — the same row the TTS slot uses, since Sarvam
+                    issues one key for both. `native` needs no integration key.
                   enum: [sarvam, native]
                   default: sarvam
                 assistant_stt_config:
-                  type: object
-                  description: STT provider config (requires assistant_stt_model)
+                  $ref: '#/components/schemas/AssistantSttConfig'
                 assistant_start_instruction:
                   type: string
                   example: "Greet the user warmly"
                 assistant_interaction_config:
-                  type: object
-                  properties:
-                    speaks_first:
-                      type: boolean
-                      example: true
-                    filler_words:
-                      type: boolean
-                      example: false
-                    silence_reprompts:
-                      type: boolean
-                      example: true
+                  $ref: '#/components/schemas/AssistantInteractionConfig'
                 assistant_end_call_enabled:
                   type: boolean
                   example: false
@@ -469,21 +454,39 @@ paths:
                 assistant_llm_mode:
                   type: string
                   enum: [pipeline, realtime]
+                  description: >
+                    Target mode. Only this field (or the presence of TTS/STT fields) switches
+                    mode — sending assistant_llm_config alone does NOT, and leaves the stored
+                    TTS/STT config untouched.
                 assistant_llm_config:
-                  type: object
+                  allOf:
+                    - $ref: '#/components/schemas/AssistantLlmConfig'
+                    - description: >
+                        Required only when switching into realtime. Safe to send on its own in
+                        pipeline mode to rotate api_key or pick gemini.
                 assistant_tts_model:
                   type: string
+                  enum: [sarvam, cartesia, elevenlabs, mistral]
+                  description: >
+                    Only required when no TTS config is stored yet. Either half of the TTS pair
+                    is enough — the other is filled in from the stored assistant, so changing
+                    just the config keeps the model and vice versa. Switching provider without
+                    a new config resets to that provider's defaults.
                 assistant_tts_config:
-                  type: object
+                  $ref: '#/components/schemas/AssistantTtsConfig'
                 assistant_stt_model:
                   type: string
                   enum: [sarvam, native]
+                  description: >
+                    `sarvam` resolves its key from the `sarvam` integration — the same row the
+                    TTS slot uses. Returns 400 if that row does not exist. Sending the model
+                    alone resets that provider's config to its defaults.
                 assistant_stt_config:
-                  type: object
+                  $ref: '#/components/schemas/AssistantSttConfig'
                 assistant_start_instruction:
                   type: string
                 assistant_interaction_config:
-                  type: object
+                  $ref: '#/components/schemas/AssistantInteractionConfig'
                 assistant_end_call_enabled:
                   type: boolean
                 assistant_end_call_trigger_phrase:
@@ -712,9 +715,12 @@ paths:
                         type: string
                       to_number:
                         type: string
-                      total_billable_duration_minutes:
+                      total_billable_minutes:
                         type: number
                         example: 125.5
+                        description: >
+                          Renamed from total_billable_duration_minutes so this endpoint and
+                          platform-billable-minutes use one key for the same quantity.
                       timespan_evaluated:
                         type: object
                         properties:
@@ -1105,11 +1111,17 @@ paths:
                 service_type:
                   type: string
                   enum: [TTS, LLM, STT]
-                  description: Auto-inferred if omitted
+                  description: >
+                    Optional. Derived from `service_name` when omitted, which is the
+                    recommended usage — the server's provider map is the source of truth.
                 service_name:
                   type: string
-                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
+                  enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
                   example: "sarvam"
+                  description: >
+                    Which provider this key belongs to. One row per provider: Sarvam issues a
+                    single key serving both TTS and STT, so the `sarvam` row covers both slots.
+                    An unrecognised name is rejected with `400`.
                 api_key:
                   type: string
                   example: "sk-xxxxxxxxxxxx"
@@ -1148,7 +1160,11 @@ paths:
                         type: string
                       status:
                         type: string
-                        enum: [pending, in_progress, completed, failed]
+                        enum: [running, completed, error, interrupted]
+                        description: >
+                          `running` while assistants are being re-pushed, `completed` on
+                          success, `error` on failure, `interrupted` when the process died
+                          mid-job (synthesized on read, never stored).
         '400':
           description: Validation error
           content:
@@ -1172,7 +1188,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
+            enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
       responses:
         '200':
           description: API key retrieved
@@ -1222,7 +1238,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
+            enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
       responses:
         '200':
           description: Re-sync status retrieved
@@ -1241,7 +1257,11 @@ paths:
                         type: string
                       status:
                         type: string
-                        enum: [pending, in_progress, completed, failed]
+                        enum: [running, completed, error, interrupted]
+                        description: >
+                          `running` while assistants are being re-pushed, `completed` on
+                          success, `error` on failure, `interrupted` when the process died
+                          mid-job (synthesized on read, never stored).
                       created_at:
                         type: string
                         format: date-time
@@ -1284,7 +1304,7 @@ paths:
                   example: "665f1a2b3c4d5e6f7a8b9c0d"
                 service_name:
                   type: string
-                  enum: [sarvam, cartesia, elevenlabs, mistral, gemini, sarvam_stt]
+                  enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
                   example: "sarvam"
       responses:
         '202':
@@ -2687,12 +2707,14 @@ components:
         llm_config:
           type: object
           nullable: true
-        model:
+        tts_model:
           type: string
           nullable: true
-        config:
+          description: TTS provider. Stored as `model` before the tts_* rename.
+        tts_config:
           type: object
           nullable: true
+          description: TTS provider config. Stored as `config` before the tts_* rename.
         stt_model:
           type: string
           nullable: true
@@ -2703,36 +2725,7 @@ components:
           type: string
           nullable: true
         interaction_config:
-          type: object
-          properties:
-            speaks_first:
-              type: boolean
-              default: true
-            filler_words:
-              type: boolean
-              default: false
-            silence_reprompts:
-              type: boolean
-              default: false
-            silence_reprompt_interval:
-              type: number
-              default: 10.0
-              description: Seconds to wait before reprompting on silence
-            silence_max_reprompts:
-              type: integer
-              default: 2
-              description: Maximum number of silence reprompts
-            background_sound_enabled:
-              type: boolean
-              default: false
-            thinking_sound_enabled:
-              type: boolean
-              default: false
-            preferred_languages:
-              type: array
-              items:
-                type: string
-              default: []
+          $ref: '#/components/schemas/AssistantInteractionConfig'
         greeting_audio:
           type: object
           nullable: true
@@ -2754,6 +2747,136 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    # Shared by assistant create, assistant update and the Assistant response so the three
+    # cannot drift. Mirrors assistant_interaction_config on the external API exactly.
+    AssistantInteractionConfig:
+      type: object
+      description: >
+        Interaction settings. Partial updates are merged with the stored config — omitted
+        fields keep their current value.
+      properties:
+        speaks_first:
+          type: boolean
+          default: true
+          description: Assistant sends the opening response first. Works in both modes.
+        filler_words:
+          type: boolean
+          default: false
+          description: >
+            Filler words while the user speaks. Pipeline mode only — forced to false in
+            realtime, which has no external TTS.
+        silence_reprompts:
+          type: boolean
+          default: false
+        silence_reprompt_interval:
+          type: number
+          default: 10.0
+          description: Seconds of silence before reprompting (1.0-60.0).
+        silence_max_reprompts:
+          type: integer
+          default: 2
+          description: Maximum reprompts before the session ends (0-5).
+        background_sound_enabled:
+          type: boolean
+          default: true
+        thinking_sound_enabled:
+          type: boolean
+          default: true
+        allow_interruptions:
+          type: boolean
+          default: false
+          description: Whether the user may interrupt the assistant's initial greeting.
+        input_guard_window_sec:
+          type: number
+          default: 3.0
+          description: >
+            Seconds at the start of every agent reply during which caller audio is blanked
+            (0.0-10.0). Blocks repeated "Hello?" and fillers from cutting the agent off.
+            Releases early if the reply finishes. `0` disables the guard.
+        max_call_duration_minutes:
+          type: number
+          nullable: true
+          description: >
+            Hard ceiling on active-call length in minutes (> 0). On reaching it the assistant
+            speaks a brief farewell and the call ends gracefully with call_end_reason
+            `max_duration_exceeded`. Unset/null = platform default of 30 minutes.
+        preferred_languages:
+          type: array
+          items:
+            type: string
+          default: []
+          example: ["hi-IN", "en-US"]
+          description: >
+            BCP-47 codes hinting the STT model for multilingual or code-switched speakers.
+            This is the only language input that is a LIST — the per-provider TTS/STT language
+            fields (`assistant_tts_config.target_language_code`,
+            `assistant_stt_config.language`) are each a single string. Empty list = auto-detect.
+
+    AssistantLlmConfig:
+      type: object
+      description: >
+        LLM vendor config. Optional in pipeline mode (defaults to `openai`; only `api_key`
+        affects runtime behavior there) and required when switching into realtime. When
+        `api_key` is omitted, the key is resolved from the Integrations module; in pipeline
+        mode a missing integration is not an error — the external API's system key is used.
+      properties:
+        provider:
+          type: string
+          enum: [openai, gemini]
+          example: "gemini"
+        model:
+          type: string
+          description: >
+            Realtime only. Gemini default `gemini-3.1-flash-live-preview`,
+            OpenAI default `gpt-realtime-1.5`.
+        voice:
+          type: string
+          description: Realtime only (ignored in pipeline — external TTS handles audio). Gemini default `Puck`, OpenAI default `marin`.
+        api_key:
+          type: string
+          example: "sk-..."
+
+    AssistantTtsConfig:
+      type: object
+      description: >
+        TTS config for the selected `assistant_tts_model`. Any `api_key` sent here is ignored —
+        the key always comes from the Integrations module. Send the fields for your provider:
+        sarvam -> `speaker` (required) + `target_language_code`; cartesia / elevenlabs /
+        mistral -> `voice_id` (required).
+      properties:
+        speaker:
+          type: string
+          description: Sarvam only, required.
+          example: "anushka"
+        target_language_code:
+          type: string
+          description: >
+            Sarvam only. A SINGLE BCP-47 string, not a list. Default `bn-IN`. For a
+            multilingual agent set `assistant_interaction_config.preferred_languages` instead.
+          example: "hi-IN"
+        voice_id:
+          type: string
+          description: Cartesia / ElevenLabs / Mistral, required.
+          example: "a167e0f3-df7e-4277-976b-be2f952fa275"
+
+    AssistantSttConfig:
+      type: object
+      description: >
+        STT config for the selected `assistant_stt_model` (requires it — a config on its own is
+        rejected). Any `api_key` sent here is ignored; the key comes from the Integrations
+        module. `native` takes no fields.
+      properties:
+        model:
+          type: string
+          default: "saaras:v3"
+          description: Sarvam STT model.
+        language:
+          type: string
+          default: "unknown"
+          description: >
+            Sarvam only. A SINGLE BCP-47 string, or `unknown` to auto-detect. Not a list.
+          example: "hi-IN"
 
     SipTrunk:
       type: object
