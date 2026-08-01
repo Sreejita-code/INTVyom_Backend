@@ -21,6 +21,121 @@ info:
     ## External API Proxy
     Most service methods proxy requests to `https://api-livekit-vyom.indusnettechnologies.com/*`,
     forwarding the user's Bearer token. External responses are typically passed through directly.
+
+    ## Assistant Runtime Modes
+    `assistant_mode` selects the session shape. It is `pipeline` by default.
+    - `pipeline` (half-cascade): a realtime model emits text, an external TTS provider speaks it.
+      Vendor `openai` (default) or `gemini`. Requires `assistant_tts_model` + `assistant_tts_config`.
+    - `realtime`: one model does STT + LLM + TTS and speaks its own audio. Requires
+      `assistant_llm_config` (defaults: `provider=gemini`, `model=gemini-3.1-flash-live-preview`,
+      `voice=Puck`). TTS/STT fields are ignored.
+    - `cascade` (true STT → LLM → TTS pipeline): separate plugin STT, a plain OpenAI chat model,
+      and a plugin TTS — each stage separately metered. LLM provider must be `openai`
+      (model free-form, default `gpt-4.1`); `assistant_stt_model` must be `sarvam` or `cartesia`
+      (`native` is rejected); TTS model+config pair required.
+
+    ## Models & Providers
+    Live reference for model IDs, defaults, and per-mode validity.
+
+    ### Realtime LLM (`pipeline` and `realtime`)
+    | Field | Values | Default |
+    | :--- | :--- | :--- |
+    | `provider` | `gemini`, `openai` | `gemini` in realtime, `openai` in pipeline |
+    | `model` | any provider model string | `gemini-3.1-flash-live-preview` (gemini), `gpt-realtime-1.5` (openai) |
+    | `voice` | provider voice name | `Puck` (gemini), `marin` (openai). Honored only in `realtime` — ignored in `pipeline` |
+    | `api_key` | string | falls back to system `GOOGLE_API_KEY` / `OPENAI_API_KEY` |
+
+    ### Cascade LLM (`cascade` only)
+    `provider` must be `openai` (any other value is rejected). `model` is free-form
+    (default `gpt-4.1`); an unknown name fails at the first API call, not at assistant creation.
+    Known-good models: `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`,
+    `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`,
+    `gpt-5.4-nano`, `gpt-5.5`, `chatgpt-4o-latest`.
+
+    ### STT (`assistant_stt_model` + `assistant_stt_config`)
+    | Provider | Valid in | Model default | Other config |
+    | :--- | :--- | :--- | :--- |
+    | `sarvam` | `pipeline` (default), `cascade` | `saaras:v3` (also `saaras:v2.5`, `saarika:v2.5`) | `language` default `unknown` (auto-detect); `mode` default `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`; only honored in `cascade`) |
+    | `cartesia` | `cascade` only | `ink-whisper` (43 languages) or `ink-2` (English only) | fixed `language`, no auto-detect |
+    | `native` | `pipeline` only — rejected in `cascade` | n/a (the realtime LLM transcribes itself) | no config |
+
+    Ignored entirely in `realtime` mode. Sarvam's `codemix` + `language=unknown` is the
+    multilingual combination; 24 codes: `as`, `bn`, `brx`, `doi`, `en`, `gu`, `hi`, `kn`, `kok`,
+    `ks`, `mai`, `ml`, `mni`, `mr`, `ne`, `od`, `pa`, `sa`, `sat`, `sd`, `ta`, `te`, `ur`
+    (all `-IN`) plus `unknown`.
+
+    ### TTS (`assistant_tts_model` + `assistant_tts_config`)
+    The synthesis model is fixed per provider — `assistant_tts_config` has no `model` key.
+    | Provider | Model (fixed) | Required config |
+    | :--- | :--- | :--- |
+    | `cartesia` | `sonic-3` | `voice_id` |
+    | `sarvam` | `bulbul:v3` | `speaker` (+ optional `target_language_code`) |
+    | `elevenlabs` | `eleven_v3` | `voice_id` |
+    | `mistral` | `voxtral-mini-tts-2603` | `voice_id` |
+
+    All four accept an optional `api_key`; keys are always resolved from the Integrations module.
+
+    ## End-Call Webhook Payload
+    When `assistant_end_call_url` (AI calls) or `passthrough_webhook_url` (passthrough calls) is
+    set, the external API POSTs the full call record to that URL once the call reaches a terminal
+    state (`completed`, `busy`, `no_answer`, `rejected`, `cancelled`, `unreachable`, `timeout`,
+    `failed`).
+
+    ```json
+    {
+      "success": true,
+      "message": "Call details fetched successfully",
+      "data": {
+        "room_name": "550e8400-e29b-41d4-a716-446655440000_abc123",
+        "queue_id": "8b7df5ea0fdc497ea4f44bd31954a387",
+        "assistant_id": "550e8400-e29b-41d4-a716-446655440000",
+        "assistant_name": "Support Agent",
+        "is_passthrough": false,
+        "to_number": "+15550200000",
+        "call_status": "completed",
+        "call_status_reason": null,
+        "sip_status_code": null,
+        "sip_status_text": null,
+        "answered_at": "2024-01-15T10:00:02.000Z",
+        "call_end_reason": "natural",
+        "recording_path": "https://your-bucket.s3.amazonaws.com/recordings/call_abc123.ogg",
+        "transcripts": [{ "speaker": "agent", "text": "Hello John", "timestamp": "2024-01-15T10:00:01.000Z" }],
+        "started_at": "2024-01-15T10:00:00.000Z",
+        "ended_at": "2024-01-15T10:05:30.000Z",
+        "call_duration_minutes": 5.5,
+        "billable_duration_minutes": 6,
+        "created_by_email": "user@example.com",
+        "call_type": "outbound",
+        "call_service": "exotel",
+        "platform_number": "08044319240",
+        "usage": {
+          "mode": "cascade",
+          "llm_model": "gpt-4.1-mini",
+          "llm_input_audio_tokens": 0,
+          "llm_input_text_tokens": 850,
+          "llm_output_audio_tokens": 0,
+          "llm_output_text_tokens": 1230,
+          "llm_total_tokens": 2080,
+          "tts_characters_count": 485,
+          "tts_audio_duration": 32.5,
+          "stt_provider": "sarvam",
+          "stt_model": "saaras:v3",
+          "stt_audio_duration": 41.75
+        }
+      }
+    }
+    ```
+
+    Key fields: `queue_id` correlates with the `POST /call/outbound` response (outbound calls
+    only); `call_end_reason` is `natural` or `max_duration_exceeded`; `usage.stt_*` fields are
+    populated **only** in `cascade` mode (the LLM transcribes internally otherwise).
+    `billable_duration_minutes` is rounded up for connected calls and `0` for non-connected
+    outcomes. Passthrough webhooks carry `assistant_id`/`assistant_name` as `null`,
+    `transcripts` as `[]`, and no `usage` object.
+
+    !!! warning "Breaking change: `usage.llm_mode` → `usage.mode`"
+        The old `usage.llm_mode` key was renamed to `usage.mode`. Consumers reading
+        `data.usage.llm_mode` will now see `undefined` — the old key is no longer emitted.
   version: 1.0.0
   contact:
     name: INTVoicekit Support
@@ -232,8 +347,7 @@ paths:
       summary: Create a new voice assistant
       description: |
         Creates a voice assistant both locally in MongoDB and externally via the Vyom API.
-        Supports two LLM modes: `pipeline` (uses TTS models like sarvam, cartesia, elevenlabs)
-        and `realtime` (uses real-time LLM providers like Gemini).
+        Supports runtime modes `pipeline`, `realtime`, and `cascade`.
       requestBody:
         required: true
         content:
@@ -254,9 +368,9 @@ paths:
                 assistant_prompt:
                   type: string
                   example: "You are a helpful customer support agent..."
-                assistant_llm_mode:
+                assistant_mode:
                   type: string
-                  enum: [pipeline, realtime]
+                  enum: [pipeline, realtime, cascade]
                   default: pipeline
                   example: "pipeline"
                 assistant_llm_config:
@@ -273,10 +387,10 @@ paths:
                 assistant_stt_model:
                   type: string
                   description: >
-                    User-transcription source (pipeline mode only). `sarvam` resolves its key
-                    from the `sarvam` integration — the same row the TTS slot uses, since Sarvam
-                    issues one key for both. `native` needs no integration key.
-                  enum: [sarvam, native]
+                    User-transcription source. `native` is pipeline-only, `cartesia` is
+                    cascade-only, `sarvam` is supported in both modes. `realtime` ignores
+                    STT fields because the model transcribes directly.
+                  enum: [sarvam, native, cartesia]
                   default: sarvam
                 assistant_stt_config:
                   $ref: '#/components/schemas/AssistantSttConfig'
@@ -451,9 +565,9 @@ paths:
                   type: string
                 assistant_prompt:
                   type: string
-                assistant_llm_mode:
+                assistant_mode:
                   type: string
-                  enum: [pipeline, realtime]
+                  enum: [pipeline, realtime, cascade]
                   description: >
                     Target mode. Only this field (or the presence of TTS/STT fields) switches
                     mode — sending assistant_llm_config alone does NOT, and leaves the stored
@@ -476,11 +590,10 @@ paths:
                   $ref: '#/components/schemas/AssistantTtsConfig'
                 assistant_stt_model:
                   type: string
-                  enum: [sarvam, native]
+                  enum: [sarvam, native, cartesia]
                   description: >
-                    `sarvam` resolves its key from the `sarvam` integration — the same row the
-                    TTS slot uses. Returns 400 if that row does not exist. Sending the model
-                    alone resets that provider's config to its defaults.
+                    `native` is pipeline-only; `cartesia` is cascade-only; `sarvam` is valid in
+                    both modes. Sending the model alone resets that provider's config to defaults.
                 assistant_stt_config:
                   $ref: '#/components/schemas/AssistantSttConfig'
                 assistant_start_instruction:
@@ -2697,8 +2810,11 @@ components:
           example: "You are a helpful customer support agent..."
         llm_mode:
           type: string
-          enum: [pipeline, realtime]
+          enum: [pipeline, realtime, cascade]
           example: "pipeline"
+          description: >
+            Runtime mode. Mirrors `assistant_mode` on the external API. `cascade` is the true
+            STT → LLM → TTS pipeline (openai LLM only, plugin STT + TTS).
         llm_provider:
           type: string
           enum: [openai, gemini]
@@ -2820,19 +2936,29 @@ components:
         affects runtime behavior there) and required when switching into realtime. When
         `api_key` is omitted, the key is resolved from the Integrations module; in pipeline
         mode a missing integration is not an error — the external API's system key is used.
+        In `cascade` mode `provider` must be `openai` and `model` is a free-form OpenAI chat
+        model (default `gpt-4.1`); `voice` is ignored.
       properties:
         provider:
           type: string
           enum: [openai, gemini]
+          description: >
+            `gemini` or `openai` in pipeline/realtime; `openai` only in cascade — any other
+            value is rejected there.
           example: "gemini"
         model:
           type: string
           description: >
-            Realtime only. Gemini default `gemini-3.1-flash-live-preview`,
-            OpenAI default `gpt-realtime-1.5`.
+            Realtime defaults: Gemini `gemini-3.1-flash-live-preview`, OpenAI `gpt-realtime-1.5`.
+            Cascade defaults to `gpt-4.1` and is free-form — any OpenAI chat model works.
+            Known-good cascade models: `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`,
+            `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`,
+            `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `chatgpt-4o-latest`.
         voice:
           type: string
-          description: Realtime only (ignored in pipeline — external TTS handles audio). Gemini default `Puck`, OpenAI default `marin`.
+          description: >
+            Realtime only (ignored in pipeline and cascade — the TTS provider owns the voice).
+            Gemini default `Puck`, OpenAI default `marin`.
         api_key:
           type: string
           example: "sk-..."
@@ -2864,19 +2990,32 @@ components:
       type: object
       description: >
         STT config for the selected `assistant_stt_model` (requires it — a config on its own is
-        rejected). Any `api_key` sent here is ignored; the key comes from the Integrations
-        module. `native` takes no fields.
+        rejected). Any `api_key` sent here is overwritten; the key comes from the Integrations
+        module. `native` takes no fields. Sarvam config: `model` (default `saaras:v3`),
+        `language` (default `unknown` = auto-detect), `mode` (default `codemix`; only honored
+        in `cascade`). Cartesia config (`cascade` only): `model` (`ink-whisper` — 43 languages —
+        or `ink-2` — English only) and a fixed `language` (default `en`; no auto-detect).
       properties:
         model:
           type: string
-          default: "saaras:v3"
-          description: Sarvam STT model.
+          description: >
+            Sarvam: `saaras:v3` (default), `saaras:v2.5`, `saarika:v2.5`. Cartesia: `ink-whisper`
+            (default) or `ink-2`.
         language:
           type: string
-          default: "unknown"
           description: >
-            Sarvam only. A SINGLE BCP-47 string, or `unknown` to auto-detect. Not a list.
+            A SINGLE BCP-47 string, not a list. Sarvam: `unknown` (default) auto-detects.
+            Cartesia: fixed code, no auto-detect.
           example: "hi-IN"
+        mode:
+          type: string
+          enum: [codemix, transcribe, translate, verbatim, translit]
+          default: codemix
+          description: >
+            Sarvam only, `saaras:v3` only. `codemix` (default) keeps code-switching intact
+            within an utterance; `transcribe` plain; `translate` returns English; `verbatim`
+            keeps fillers/repetitions; `translit` romanises Indic script. Only honored in
+            `cascade` mode — the pipeline parallel tap hardcodes `codemix`.
 
     SipTrunk:
       type: object

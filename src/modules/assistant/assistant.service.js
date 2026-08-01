@@ -15,7 +15,7 @@ const ASSISTANT_FIELDS = [
   'assistant_name',
   'assistant_description',
   'assistant_prompt',
-  'assistant_llm_mode',
+  'assistant_mode',
   'assistant_llm_config',
   'assistant_tts_model',
   'assistant_tts_config',
@@ -30,6 +30,18 @@ const ASSISTANT_FIELDS = [
   'assistant_greeting_audio',
 ];
 
+// The retired assistant_llm_mode alias is rejected with a clear 400 — silently mapping it
+// would hide the rename from old clients and could create an assistant in the wrong mode.
+const rejectRetiredModeAlias = (data = {}) => {
+  if (data.assistant_llm_mode !== undefined) {
+    throw badRequest(
+      "assistant_llm_mode is retired — use assistant_mode ('pipeline', 'realtime', or 'cascade')"
+    );
+  }
+};
+
+const requestedModeFrom = (data = {}) => data.assistant_mode;
+
 const pickAssistantFields = (data) => {
   const picked = {};
   for (const field of ASSISTANT_FIELDS) {
@@ -41,8 +53,8 @@ const pickAssistantFields = (data) => {
 const normalizeMode = (mode, defaultMode = 'pipeline') => {
   if (mode === undefined || mode === null || mode === '') return defaultMode;
   const normalized = String(mode).toLowerCase();
-  if (normalized !== 'pipeline' && normalized !== 'realtime') {
-    throw badRequest("assistant_llm_mode must be either 'pipeline' or 'realtime'");
+  if (normalized !== 'pipeline' && normalized !== 'realtime' && normalized !== 'cascade') {
+    throw badRequest("assistant_mode must be one of 'pipeline', 'realtime', or 'cascade'");
   }
   return normalized;
 };
@@ -83,14 +95,27 @@ const buildPipelineSttConfig = async ({ userId, sttModel, sttConfig }) => {
   return finalSttConfig;
 };
 
-// Top-down provider resolution: explicit request value wins, else the persisted
-// per-assistant provider (dedicated field, then legacy nested value), else default openai.
-// This is what keeps the vendor consistent across a pipeline<->realtime switch.
-const resolveProvider = (llmConfig, existing) => {
-  const raw = llmConfig?.provider
-    ?? existing?.llm_provider
-    ?? existing?.llm_config?.provider;
-  const provider = raw ? String(raw).toLowerCase() : 'openai';
+// Provider resolution is mode-aware:
+// - realtime defaults to gemini
+// - pipeline defaults to openai
+// - cascade only allows openai
+const resolveProvider = ({ llmConfig, existing, mode, modeExplicit = false }) => {
+  const defaultByMode = mode === 'realtime' ? 'gemini' : 'openai';
+  const explicitProvider = llmConfig?.provider;
+  let raw;
+
+  if (explicitProvider !== undefined) {
+    raw = explicitProvider;
+  } else if (modeExplicit) {
+    raw = defaultByMode;
+  } else {
+    raw = existing?.llm_provider ?? existing?.llm_config?.provider ?? defaultByMode;
+  }
+
+  const provider = raw ? String(raw).toLowerCase() : defaultByMode;
+  if (mode === 'cascade' && provider !== 'openai') {
+    throw badRequest("assistant_llm_config.provider must be 'openai' in cascade mode");
+  }
   if (!keyNameFor('llm', provider)) {
     const allowed = modelsFor('llm').map((p) => `'${p}'`).join(' or ');
     throw badRequest(`assistant_llm_config.provider must be ${allowed}`);
@@ -98,11 +123,10 @@ const resolveProvider = (llmConfig, existing) => {
   return provider;
 };
 
-// Build the assistant_llm_config sent to the external API for either mode.
+// Build the assistant_llm_config sent to the external API for any mode.
 // Injects the resolved provider and resolves the api_key: caller-supplied key wins, otherwise
 // pull the user's integrated key for that provider. In pipeline mode the key is optional — the
-// external API falls back to its own system key — so a missing integration is not an error
-// there; the field is simply omitted. Realtime requires a key.
+// external API can fall back to its own system key — so callers may mark it as not required.
 const buildLlmConfig = async ({ userId, llmConfig, provider, keyRequired = true }) => {
   const finalLlmConfig = { ...(llmConfig || {}), provider };
 
@@ -116,14 +140,26 @@ const buildLlmConfig = async ({ userId, llmConfig, provider, keyRequired = true 
   return finalLlmConfig;
 };
 
-// Which mode a PATCH targets. Only an explicit assistant_llm_mode or the presence of TTS/STT
+const assertSttModelAllowedInMode = (mode, sttModel) => {
+  if (sttModel === undefined || sttModel === null || sttModel === '') return;
+
+  if (mode === 'cascade' && sttModel === 'native') {
+    throw badRequest("assistant_stt_model must be 'sarvam' or 'cartesia' in cascade mode");
+  }
+  if (mode === 'pipeline' && sttModel === 'cartesia') {
+    throw badRequest("assistant_stt_model 'cartesia' is only supported in cascade mode");
+  }
+};
+
+// Which mode a PATCH targets. Only an explicit assistant_mode or the presence of TTS/STT
 // fields implies a mode — assistant_llm_config does NOT. Per the external API's update rules it
 // is legal on its own in pipeline mode (to set api_key or pick gemini) and the stored TTS config
 // is preserved, so inferring `realtime` from it would silently flip mode and wipe TTS/STT.
 const inferTargetModeForUpdate = (updateData, existingMode) => {
-  if (updateData.assistant_llm_mode !== undefined) {
+  const requestedMode = requestedModeFrom(updateData);
+  if (requestedMode !== undefined) {
     return {
-      targetMode: normalizeMode(updateData.assistant_llm_mode),
+      targetMode: normalizeMode(requestedMode),
       modeDerivedFromPayload: true
     };
   }
@@ -131,7 +167,7 @@ const inferTargetModeForUpdate = (updateData, existingMode) => {
   if (updateData.assistant_tts_model !== undefined || updateData.assistant_tts_config !== undefined ||
       updateData.assistant_stt_model !== undefined || updateData.assistant_stt_config !== undefined) {
     return {
-      targetMode: 'pipeline',
+      targetMode: normalizeMode(existingMode, 'pipeline') === 'cascade' ? 'cascade' : 'pipeline',
       modeDerivedFromPayload: true
     };
   }
@@ -172,7 +208,7 @@ const createAssistant = async (data) => {
     assistant_name, 
     assistant_description, 
     assistant_prompt, 
-    assistant_llm_mode,
+    assistant_mode,
     assistant_llm_config,
     assistant_tts_model, 
     assistant_tts_config,
@@ -188,10 +224,16 @@ const createAssistant = async (data) => {
   } = data;
 
   // 1. Validate User
+  rejectRetiredModeAlias(data);
   const user = await getUserWithKey(user_id);
 
-  const mode = normalizeMode(assistant_llm_mode, 'pipeline');
-  const provider = resolveProvider(assistant_llm_config, null);
+  const mode = normalizeMode(assistant_mode, 'pipeline');
+  const provider = resolveProvider({
+    llmConfig: assistant_llm_config,
+    existing: null,
+    mode,
+    modeExplicit: true
+  });
   const interactionConfig = sanitizeInteractionConfigForMode(assistant_interaction_config, mode);
 
   // 3. Construct External Payload
@@ -200,10 +242,12 @@ const createAssistant = async (data) => {
     assistant_name,
     assistant_description,
     assistant_prompt,
-    assistant_llm_mode: mode
+    assistant_mode: mode
   };
 
-  if (mode === 'pipeline') {
+  if (mode !== 'realtime') {
+    assertSttModelAllowedInMode(mode, assistant_stt_model);
+
     const finalTtsConfig = await buildPipelineTtsConfig({
       userId: user._id,
       ttsModel: assistant_tts_model,
@@ -223,13 +267,13 @@ const createAssistant = async (data) => {
     if (finalSttConfig !== undefined) externalPayload.assistant_stt_config = finalSttConfig;
   }
 
-  // LLM vendor is forwarded in both modes (top-down provider setting). The key is only
-  // mandatory in realtime — pipeline falls back to the external API's own system key.
+  // LLM vendor is forwarded in both modes (top-down provider setting).
+  // API key is optional in all modes; when missing, upstream may use its own system key.
   externalPayload.assistant_llm_config = await buildLlmConfig({
     userId: user._id,
     llmConfig: assistant_llm_config,
     provider,
-    keyRequired: mode === 'realtime'
+    keyRequired: false
   });
 
   if (assistant_start_instruction) externalPayload.assistant_start_instruction = assistant_start_instruction;
@@ -298,40 +342,53 @@ const getAssistantDetails = async (userId, assistantId) => {
 // --- 4. Update Assistant ---
 const updateAssistant = async (userId, assistantId, updateData) => {
   const user = await getUserWithKey(userId);
+  rejectRetiredModeAlias(updateData);
+  const normalizedUpdateData = updateData;
+  const modeRequestedExplicitly = requestedModeFrom(updateData) !== undefined;
+  const llmConfigProvided = normalizedUpdateData.assistant_llm_config !== undefined;
 
   const existingAssistant = await Assistant.findOne({ external_assistant_id: assistantId });
 
   const { targetMode, modeDerivedFromPayload } = inferTargetModeForUpdate(
-    updateData,
+    normalizedUpdateData,
     existingAssistant?.llm_mode
   );
-  const shouldIncludeModeInExternal = updateData.assistant_llm_mode !== undefined || modeDerivedFromPayload;
-  const provider = resolveProvider(updateData.assistant_llm_config, existingAssistant);
-  // Re-send the LLM vendor only when the caller touches llm config or the mode
-  // (every real mode switch sets the mode) — not on unrelated name/TTS edits.
-  const touchesLlm = updateData.assistant_llm_config !== undefined || updateData.assistant_llm_mode !== undefined;
+  const shouldIncludeModeInExternal = modeRequestedExplicitly || modeDerivedFromPayload;
+  const provider = resolveProvider({
+    llmConfig: normalizedUpdateData.assistant_llm_config,
+    existing: existingAssistant,
+    mode: targetMode,
+    modeExplicit: modeRequestedExplicitly
+  });
+  // Only push LLM config when requested, except realtime mode switches where the config object
+  // is mandatory.
+  const touchesLlm = llmConfigProvided || (modeRequestedExplicitly && targetMode === 'realtime');
 
   // Whitelist, not a spread: only fields the external API knows about go out.
-  const externalUpdatePayload = pickAssistantFields(updateData);
+  const externalUpdatePayload = pickAssistantFields(normalizedUpdateData);
 
-  if (updateData.assistant_interaction_config !== undefined) {
+  if (normalizedUpdateData.assistant_interaction_config !== undefined) {
     externalUpdatePayload.assistant_interaction_config = sanitizeInteractionConfigForMode(
-      updateData.assistant_interaction_config,
+      normalizedUpdateData.assistant_interaction_config,
       targetMode
     );
   }
 
-  // LLM vendor is forwarded in both modes (top-down provider setting), resolved above.
+  if (modeRequestedExplicitly && targetMode === 'realtime' && !llmConfigProvided) {
+    throw badRequest("assistant_llm_config is required when switching assistant_mode to 'realtime'");
+  }
+
+  // LLM config is forwarded only on explicit LLM edits, plus realtime mode switches.
   if (touchesLlm) {
-    const llmConfigToUse = updateData.assistant_llm_config !== undefined
-      ? updateData.assistant_llm_config
+    const llmConfigToUse = llmConfigProvided
+      ? normalizedUpdateData.assistant_llm_config
       : existingAssistant?.llm_config;
 
     externalUpdatePayload.assistant_llm_config = await buildLlmConfig({
       userId: user._id,
       llmConfig: llmConfigToUse,
       provider,
-      keyRequired: targetMode === 'realtime'
+      keyRequired: false
     });
   } else {
     delete externalUpdatePayload.assistant_llm_config;
@@ -339,29 +396,36 @@ const updateAssistant = async (userId, assistantId, updateData) => {
 
   if (targetMode === 'realtime') {
     if (shouldIncludeModeInExternal) {
-      externalUpdatePayload.assistant_llm_mode = 'realtime';
+      externalUpdatePayload.assistant_mode = 'realtime';
     } else {
-      delete externalUpdatePayload.assistant_llm_mode;
+      delete externalUpdatePayload.assistant_mode;
     }
     delete externalUpdatePayload.assistant_tts_model;
     delete externalUpdatePayload.assistant_tts_config;
     delete externalUpdatePayload.assistant_stt_model;
     delete externalUpdatePayload.assistant_stt_config;
   } else {
+    if (targetMode === 'cascade') {
+      const effectiveSttModel = normalizedUpdateData.assistant_stt_model ?? existingAssistant?.stt_model;
+      if (effectiveSttModel === 'native') {
+        throw badRequest("assistant_stt_model must be 'sarvam' or 'cartesia' in cascade mode");
+      }
+    }
+
     if (shouldIncludeModeInExternal) {
-      externalUpdatePayload.assistant_llm_mode = 'pipeline';
+      externalUpdatePayload.assistant_mode = targetMode;
     } else {
-      delete externalUpdatePayload.assistant_llm_mode;
+      delete externalUpdatePayload.assistant_mode;
     }
 
     // TTS must go out as a pair — the external API rejects assistant_tts_config without
     // assistant_tts_model (there is no discriminator to validate the config against).
     if (
-      updateData.assistant_tts_model !== undefined ||
-      updateData.assistant_tts_config !== undefined ||
+      normalizedUpdateData.assistant_tts_model !== undefined ||
+      normalizedUpdateData.assistant_tts_config !== undefined ||
       modeDerivedFromPayload
     ) {
-      const { model: ttsModel, config: ttsConfig } = resolvePairForUpdate(updateData, existingAssistant, 'tts');
+      const { model: ttsModel, config: ttsConfig } = resolvePairForUpdate(normalizedUpdateData, existingAssistant, 'tts');
 
       if (ttsModel === undefined) {
         // Never configured and the caller sent none: send neither half.
@@ -382,11 +446,12 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     // STT is looser: the model alone is legal (it resets that provider's defaults), but a
     // lone config is rejected. `native` resolves no config, so it goes out as model-only.
     if (
-      updateData.assistant_stt_model !== undefined ||
-      updateData.assistant_stt_config !== undefined ||
+      normalizedUpdateData.assistant_stt_model !== undefined ||
+      normalizedUpdateData.assistant_stt_config !== undefined ||
       modeDerivedFromPayload
     ) {
-      const { model: sttModel, config: sttConfig } = resolvePairForUpdate(updateData, existingAssistant, 'stt');
+      const { model: sttModel, config: sttConfig } = resolvePairForUpdate(normalizedUpdateData, existingAssistant, 'stt');
+      assertSttModelAllowedInMode(targetMode, sttModel);
 
       if (sttModel === undefined) {
         delete externalUpdatePayload.assistant_stt_model;
@@ -415,31 +480,32 @@ const updateAssistant = async (userId, assistantId, updateData) => {
 
   // Use explicit undefined checks so boolean false isn't ignored
   const localUpdateFields = {};
-  if (updateData.assistant_name !== undefined) localUpdateFields.name = updateData.assistant_name;
-  if (updateData.assistant_description !== undefined) localUpdateFields.description = updateData.assistant_description;
-  if (updateData.assistant_prompt !== undefined) localUpdateFields.prompt = updateData.assistant_prompt;
-  if (updateData.assistant_llm_config !== undefined) localUpdateFields.llm_config = updateData.assistant_llm_config;
-  if (updateData.assistant_tts_model !== undefined) localUpdateFields.tts_model = updateData.assistant_tts_model;
-  if (updateData.assistant_tts_config !== undefined) localUpdateFields.tts_config = updateData.assistant_tts_config;
-  if (updateData.assistant_stt_model !== undefined) localUpdateFields.stt_model = updateData.assistant_stt_model;
-  if (updateData.assistant_stt_config !== undefined) localUpdateFields.stt_config = updateData.assistant_stt_config;
-  if (updateData.assistant_start_instruction !== undefined) localUpdateFields.start_instruction = updateData.assistant_start_instruction;
-  if (updateData.assistant_interaction_config !== undefined) {
+  if (normalizedUpdateData.assistant_name !== undefined) localUpdateFields.name = normalizedUpdateData.assistant_name;
+  if (normalizedUpdateData.assistant_description !== undefined) localUpdateFields.description = normalizedUpdateData.assistant_description;
+  if (normalizedUpdateData.assistant_prompt !== undefined) localUpdateFields.prompt = normalizedUpdateData.assistant_prompt;
+  if (normalizedUpdateData.assistant_llm_config !== undefined) localUpdateFields.llm_config = normalizedUpdateData.assistant_llm_config;
+  if (normalizedUpdateData.assistant_tts_model !== undefined) localUpdateFields.tts_model = normalizedUpdateData.assistant_tts_model;
+  if (normalizedUpdateData.assistant_tts_config !== undefined) localUpdateFields.tts_config = normalizedUpdateData.assistant_tts_config;
+  if (normalizedUpdateData.assistant_stt_model !== undefined) localUpdateFields.stt_model = normalizedUpdateData.assistant_stt_model;
+  if (normalizedUpdateData.assistant_stt_config !== undefined) localUpdateFields.stt_config = normalizedUpdateData.assistant_stt_config;
+  if (normalizedUpdateData.assistant_start_instruction !== undefined) localUpdateFields.start_instruction = normalizedUpdateData.assistant_start_instruction;
+  if (normalizedUpdateData.assistant_interaction_config !== undefined) {
     localUpdateFields.interaction_config = sanitizeInteractionConfigForMode(
-      updateData.assistant_interaction_config,
+      normalizedUpdateData.assistant_interaction_config,
       targetMode
     );
   }
-  if (updateData.assistant_llm_mode !== undefined || modeDerivedFromPayload) {
+  if (modeRequestedExplicitly || modeDerivedFromPayload) {
     localUpdateFields.llm_mode = targetMode;
   }
-  // Persist the resolved provider (top-down setting) on every update.
-  localUpdateFields.llm_provider = provider;
-  if (updateData.assistant_end_call_enabled !== undefined) localUpdateFields.end_call_enabled = updateData.assistant_end_call_enabled;
-  if (updateData.assistant_end_call_trigger_phrase !== undefined) localUpdateFields.end_call_trigger_phrase = updateData.assistant_end_call_trigger_phrase;
-  if (updateData.assistant_end_call_agent_message !== undefined) localUpdateFields.end_call_agent_message = updateData.assistant_end_call_agent_message;
-  if (updateData.assistant_end_call_url !== undefined) localUpdateFields.end_call_url = updateData.assistant_end_call_url;
-  if (updateData.assistant_greeting_audio !== undefined) localUpdateFields.greeting_audio = updateData.assistant_greeting_audio;
+  if (llmConfigProvided || modeRequestedExplicitly || modeDerivedFromPayload) {
+    localUpdateFields.llm_provider = provider;
+  }
+  if (normalizedUpdateData.assistant_end_call_enabled !== undefined) localUpdateFields.end_call_enabled = normalizedUpdateData.assistant_end_call_enabled;
+  if (normalizedUpdateData.assistant_end_call_trigger_phrase !== undefined) localUpdateFields.end_call_trigger_phrase = normalizedUpdateData.assistant_end_call_trigger_phrase;
+  if (normalizedUpdateData.assistant_end_call_agent_message !== undefined) localUpdateFields.end_call_agent_message = normalizedUpdateData.assistant_end_call_agent_message;
+  if (normalizedUpdateData.assistant_end_call_url !== undefined) localUpdateFields.end_call_url = normalizedUpdateData.assistant_end_call_url;
+  if (normalizedUpdateData.assistant_greeting_audio !== undefined) localUpdateFields.greeting_audio = normalizedUpdateData.assistant_greeting_audio;
 
   const updatedAssistant = await Assistant.findOneAndUpdate(
     { external_assistant_id: assistantId }, 
@@ -751,5 +817,6 @@ module.exports = {
   ASSISTANT_FIELDS,
   pickAssistantFields,
   inferTargetModeForUpdate,
-  resolvePairForUpdate
+  resolvePairForUpdate,
+  rejectRetiredModeAlias
 };

@@ -23,6 +23,14 @@ const assignInbound = async (data) => {
 
   const user = await getUserWithKey(user_id);
 
+  // The external API requires an active assistant at assign time — detaching is done via
+  // /inbound/update with assistant_id: null.
+  if (assistant_id === undefined || assistant_id === null || assistant_id === '') {
+    const error = new Error('assistant_id is required to assign an inbound number');
+    error.status = 400;
+    throw error;
+  }
+
   const assistant = await resolveAssistantId(user._id, assistant_id);
 
   const externalPayload = {

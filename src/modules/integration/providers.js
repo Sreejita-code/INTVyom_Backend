@@ -17,6 +17,7 @@ const PROVIDER_KEYS = {
   },
   stt: {
     sarvam: 'sarvam',
+    cartesia: 'cartesia',
     // ponytail: `native` deliberately absent — the external API supplies its own STT,
     // so no key is resolved and the caller's config is forwarded verbatim.
   },
@@ -119,7 +120,10 @@ if (require.main === module) {
     { kind: 'stt', model: 'sarvam' },
   ]);
   assert.deepStrictEqual(classify('openai'), [{ kind: 'llm', model: 'openai' }]);
-  assert.deepStrictEqual(classify('CARTESIA'), [{ kind: 'tts', model: 'cartesia' }]);
+  assert.deepStrictEqual(classify('CARTESIA'), [
+    { kind: 'tts', model: 'cartesia' },
+    { kind: 'stt', model: 'cartesia' },
+  ]);
   assert.strictEqual(classify('nonsense'), undefined);
   assert.strictEqual(classify('sarvam_stt'), undefined); // retired: STT reads the shared row
 
@@ -128,7 +132,7 @@ if (require.main === module) {
   assert.strictEqual(serviceTypeFor('nonsense'), undefined);
 
   assert.deepStrictEqual(modelsFor('llm'), ['openai', 'gemini']);
-  assert.deepStrictEqual(modelsFor('stt'), ['sarvam']);
+  assert.deepStrictEqual(modelsFor('stt'), ['sarvam', 'cartesia']);
   assert.deepStrictEqual(SERVICE_NAMES, [
     'cartesia', 'elevenlabs', 'gemini', 'mistral', 'openai', 'sarvam',
   ]);

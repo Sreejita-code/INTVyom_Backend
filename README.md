@@ -113,13 +113,22 @@ Additional fields for create/update:
 - `assistant_greeting_audio`: Object `{ "enabled": bool, "audio_id": string }`. When enabled and `interaction_config.speaks_first=true`, plays the prerecorded clip instead of a model-generated greeting.
 
 Mode-aware fields for create/update:
-- `assistant_llm_mode`: `pipeline` (default) or `realtime`.
-- `assistant_llm_config`: LLM config object. Forwarded in **both** modes.
-- `assistant_tts_model` and `assistant_tts_config`: Pipeline TTS fields (used when mode is `pipeline`).
+- `assistant_mode`: `pipeline` (default), `realtime`, or `cascade`.
+- `assistant_llm_config`: LLM config object. Forwarded in **all** modes. In `cascade` mode the
+  provider must be `openai` and `model` is a free-form chat model (default `gpt-4.1`).
+- `assistant_tts_model` and `assistant_tts_config`: TTS fields (used when mode is `pipeline` or
+  `cascade`).
+- `assistant_stt_model` and `assistant_stt_config`: STT fields. `sarvam` (default) or `native`
+  in pipeline; `sarvam` or `cartesia` in cascade (`native` rejected); ignored in realtime.
+
+The retired `assistant_llm_mode` alias is rejected with `400` — use `assistant_mode`. Old
+clients still sending it fail loudly instead of silently creating an assistant in the wrong mode.
 
 Only known `assistant_*` fields are forwarded — the list is `ASSISTANT_FIELDS` in
 `assistant.service.js`. A typo or a retired key (e.g. `interaction_config.user_stt_provider`) is
-dropped rather than passed on for the external API to reject with `422`.
+dropped rather than passed on for the external API to reject with `422`. Legacy local docs
+carrying `interaction_config.user_stt_provider` / `.stt_api_key` (or `stt_model: "openai"`) are
+fixed by `node scripts/migrate-stt-config.js`.
 
 Language fields, three of them, easy to confuse:
 - `assistant_tts_config.target_language_code` — **single string** (BCP-47). Sarvam TTS only.
@@ -129,15 +138,18 @@ Language fields, three of them, easy to confuse:
   code-switched speakers; `[]` reverts to auto-detection.
 
 Update semantics (mirrors the external API's validation rules):
-- Mode only changes on an explicit `assistant_llm_mode`, or when TTS/STT fields are present.
+- Mode only changes on an explicit `assistant_mode`, or when TTS/STT fields are present.
   Sending `assistant_llm_config` on its own is legal in pipeline mode (rotate `api_key`, pick
   `gemini`) and leaves the stored TTS/STT config alone.
 - TTS goes out as a `model` + `config` pair; either half is enough, the other is filled in from
   the stored assistant. Switching TTS/STT provider without a new config resets to that
   provider's defaults rather than carrying the old provider's fields over.
+- Switching to `cascade`: STT must not be `native` (send `sarvam`/`cartesia` in the same
+  request) and `assistant_llm_config.provider` must be `openai` or omitted.
 
 LLM provider (`assistant_llm_config.provider`):
-- Vendor selector, `openai` or `gemini`. Honored in both pipeline and realtime modes.
+- Vendor selector, `openai` or `gemini`. Honored in pipeline and realtime modes. In `cascade`
+  mode only `openai` is valid — `gemini` returns `400`.
 - Top-down persistent setting: stored on the assistant (`llm_provider`), defaults to `openai`.
 - **Consistent across a mode switch** — switching `pipeline`↔`realtime` without re-sending
   `provider` keeps the previously stored vendor. Only the vendor persists; `model`/`voice`
@@ -156,11 +168,13 @@ TTS API key resolution (pipeline only):
 2. `400 Integration required`. Any `api_key` in `assistant_tts_config` is **overwritten** — there is
    no per-assistant override for TTS.
 
-STT API key resolution (pipeline only):
+STT API key resolution (pipeline and cascade):
 1. Integration key `sarvam` — the same row the TTS slot uses, since Sarvam issues one key for
    both directions, else
-2. `400 Integration required`. As with TTS, any `api_key` in `assistant_stt_config` is overwritten.
-3. `assistant_stt_model: "native"` needs no key at all; its config is forwarded verbatim.
+2. `cartesia` (`cascade` mode only) resolves the `cartesia` integration row — also shared with
+   the TTS slot, else
+3. `400 Integration required`. As with TTS, any `api_key` in `assistant_stt_config` is overwritten.
+4. `assistant_stt_model: "native"` (pipeline only) needs no key at all; its config is forwarded verbatim.
 
 One provider, one row. The map of model → `service_name` lives in
 `src/modules/integration/providers.js`; `POST /api/integration/store` rejects any
@@ -169,6 +183,48 @@ One provider, one row. The map of model → `service_name` lives in
 Other behavior:
 - `assistant_interaction_config.filler_words` is always forced to `false` in realtime mode.
 - Pipeline-only TTS fields are ignored/stripped when sending realtime updates.
+- `cascade` mode: STT must be `sarvam` or `cartesia`, LLM provider must be `openai`.
+
+### Models & Providers (reference)
+
+Realtime LLM defaults — `provider`: `gemini` (realtime) / `openai` (pipeline);
+`model`: `gemini-3.1-flash-live-preview` / `gpt-realtime-1.5`; `voice`: `Puck` / `marin`
+(voice honored in realtime only).
+
+Cascade LLM — `provider` `openai` only, `model` free-form (default `gpt-4.1`). Known-good:
+`gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`,
+`gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
+`chatgpt-4o-latest`.
+
+STT — `sarvam` (pipeline default + cascade): `model` `saaras:v3` (also `saaras:v2.5`,
+`saarika:v2.5`), `language` `unknown` auto-detect (24 `-IN` codes), `mode` `codemix` (only
+honored in cascade). `cartesia` (cascade only): `model` `ink-whisper` (43 languages) / `ink-2`
+(English only), fixed `language`. `native` (pipeline only): the realtime LLM transcribes itself.
+
+TTS — the synthesis model is fixed per provider and not configurable: `cartesia` `sonic-3`
+(`voice_id`), `sarvam` `bulbul:v3` (`speaker`), `elevenlabs` `eleven_v3` (`voice_id`),
+`mistral` `voxtral-mini-tts-2603` (`voice_id`).
+
+### End-Call Webhook Payload
+
+`assistant_end_call_url` (AI calls) and `passthrough_webhook_url` (passthrough calls) receive a
+POST with the full call record on every terminal outcome (`completed`, `busy`, `no_answer`,
+`rejected`, `cancelled`, `unreachable`, `timeout`, `failed`).
+
+- `data.queue_id` correlates with the `POST /call/outbound` response (outbound only; `null`
+  for inbound/web).
+- `data.call_end_reason`: `natural` | `max_duration_exceeded` (may be `null` on legacy records).
+- `data.usage.mode`: `pipeline` | `realtime` | `cascade`. **Breaking:** the old
+  `usage.llm_mode` key is no longer emitted — read `usage.mode`.
+- `data.usage.stt_provider` / `stt_model` / `stt_audio_duration` are populated **only** in
+  `cascade` mode; `null`/`0` otherwise (the LLM transcribes internally).
+- `data.billable_duration_minutes`: rounded up for connected calls, `0` for non-connected
+  outcomes. Clients should not recompute it.
+- Passthrough webhooks: `assistant_id`/`assistant_name` are `null`, `transcripts` is `[]`, and
+  there is no `usage` object.
+- Statuses: `initiated`/`answered`/`completed` are lifecycle; `busy`, `no_answer`, `rejected`,
+  `cancelled`, `unreachable`, `timeout`, `failed` are terminal SIP outcomes. `sip_status_code`
+  / `sip_status_text` carry the SIP-level detail when available.
 
 ### SIP (`/api/sip`)
 

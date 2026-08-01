@@ -11,7 +11,7 @@ const AssistantSchema = new mongoose.Schema({
   description: { type: String, required: true },
   llm_mode: {
     type: String,
-    enum: ['pipeline', 'realtime'],
+    enum: ['pipeline', 'realtime', 'cascade'],
     default: 'pipeline'
   },
   llm_provider: {

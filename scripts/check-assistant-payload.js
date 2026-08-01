@@ -13,6 +13,7 @@ const {
   pickAssistantFields,
   inferTargetModeForUpdate,
   resolvePairForUpdate,
+  rejectRetiredModeAlias,
 } = require('../src/modules/assistant/assistant.service');
 
 // --- whitelist ---------------------------------------------------------------
@@ -44,13 +45,27 @@ assert.deepStrictEqual(
 );
 // An explicit mode always wins.
 assert.deepStrictEqual(
-  inferTargetModeForUpdate({ assistant_llm_mode: 'realtime' }, 'pipeline'),
+  inferTargetModeForUpdate({ assistant_mode: 'realtime' }, 'pipeline'),
   { targetMode: 'realtime', modeDerivedFromPayload: true }
 );
+// The retired assistant_llm_mode alias no longer drives mode inference.
+assert.deepStrictEqual(
+  inferTargetModeForUpdate({ assistant_llm_mode: 'cascade' }, 'pipeline'),
+  { targetMode: 'pipeline', modeDerivedFromPayload: false }
+);
+// ...and is rejected outright at the create/update entry point.
+assert.throws(() => rejectRetiredModeAlias({ assistant_llm_mode: 'realtime' }), /retired/);
+assert.strictEqual(rejectRetiredModeAlias({ assistant_mode: 'cascade' }), undefined);
+assert.strictEqual(rejectRetiredModeAlias({}), undefined);
 // TTS/STT presence still implies pipeline.
 assert.deepStrictEqual(
   inferTargetModeForUpdate({ assistant_tts_config: { speaker: 'anushka' } }, 'realtime'),
   { targetMode: 'pipeline', modeDerivedFromPayload: true }
+);
+// Existing cascade assistants stay in cascade when updating TTS/STT without an explicit mode.
+assert.deepStrictEqual(
+  inferTargetModeForUpdate({ assistant_stt_config: { language: 'hi-IN' } }, 'cascade'),
+  { targetMode: 'cascade', modeDerivedFromPayload: true }
 );
 assert.deepStrictEqual(
   inferTargetModeForUpdate({ assistant_stt_model: 'native' }, 'realtime'),
@@ -61,7 +76,7 @@ assert.deepStrictEqual(
   inferTargetModeForUpdate({ assistant_name: 'Renamed' }, undefined),
   { targetMode: 'pipeline', modeDerivedFromPayload: false }
 );
-assert.throws(() => inferTargetModeForUpdate({ assistant_llm_mode: 'hybrid' }, 'pipeline'), /pipeline.*realtime/);
+assert.throws(() => inferTargetModeForUpdate({ assistant_mode: 'hybrid' }, 'pipeline'), /pipeline.*realtime.*cascade/);
 
 // --- pair resolution ---------------------------------------------------------
 const stored = {
