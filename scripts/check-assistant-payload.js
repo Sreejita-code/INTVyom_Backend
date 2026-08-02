@@ -14,7 +14,7 @@ const {
   inferTargetModeForUpdate,
   resolvePairForUpdate,
   rejectRetiredModeAlias,
-} = require('../src/modules/assistant/assistant.service');
+} = require('../src/assistant/assistant.rules');
 
 // --- whitelist ---------------------------------------------------------------
 assert.deepStrictEqual(

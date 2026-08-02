@@ -1,13 +1,19 @@
 {
-  "name": "myapp",
+  "name": "intvyom-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Express + MongoDB backend for INTVyom voice assistant operations, proxying the LiveKit Agents API.",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node src/app.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test"
   },
-  "keywords": [],
+  "keywords": [
+    "voice",
+    "assistant",
+    "livekit",
+    "sip"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",

@@ -7,12 +7,29 @@ This service:
 - Proxies most assistant-related operations to the external Vyom API.
 - Exposes module-based REST endpoints under `/api/*`.
 
+## Response Envelope
+
+Success responses keep their per-endpoint shape (unchanged, so existing clients keep
+working) — most are `{ success, message, data }`, some proxy the upstream body verbatim.
+
+Every failure returns the same shape, built centrally by
+`src/core/middleware/errorHandler.js`:
+
+```json
+{ "error": "Assistant not found" }
+```
+
+- The status comes from `err.status` (validation `400`, upstream `4xx` passed through,
+  `404` for unknown routes) and falls back to `500`.
+- Analytics endpoints forward the upstream error body verbatim instead, via `err.payload`.
+- Route handlers never build error bodies — they `throw` and land in the central handler.
+
 ## Tech Stack
 
 - Node.js (CommonJS)
 - Express
 - Mongoose
-- Axios
+- Axios (only inside `src/services/`)
 - Docker / Docker Compose
 
 ## Prerequisites
@@ -31,11 +48,18 @@ PORT=3000
 MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/intvyom?retryWrites=true&w=majority
 ```
 
+Every variable the runtime reads — all of them in `src/core/config.js`, mirrored by
+`.env.example`:
+
+| Variable | Default | Note |
+|---|---|---|
+| `PORT` | `3000` | HTTP listen port |
+| `MONGO_URI` | none (required) | MongoDB connection string |
+| `EXTERNAL_API_BASE` | `https://api-livekit-vyom.indusnettechnologies.com` | LiveKit Agents host; override for staging or a local mock |
+
 Notes:
-- Runtime code directly reads only `PORT`, `MONGO_URI` and the optional `EXTERNAL_API_BASE`
-  (the LiveKit Agents host; defaults to production when unset).
 - Provider keys (TTS: `sarvam`/`cartesia`/`elevenlabs`/`mistral`, STT: `sarvam`, LLM: `openai`/`gemini`) are stored through integration APIs, not read from process env.
-- `src/modules/integration/providers.js` is the single source of truth for which `service_name` row holds which key. Adding a provider means one entry there, not a grep across modules. Run `node src/modules/integration/providers.js` for its self-check.
+- `src/integration/providers.js` is the single source of truth for which `service_name` row holds which key. Adding a provider means one entry there, not a grep across modules. Run `node src/integration/providers.js` for its self-check.
 - Assistant payload rules (TTS/STT pairing, mode inference, field whitelist) have their own
   self-check: `node scripts/check-assistant-payload.js`. No DB or network needed.
 
@@ -43,7 +67,7 @@ Notes:
 
 ```bash
 npm install
-npm start
+npm start          # or: npm run dev — same thing, restarts on file changes
 ```
 
 Server starts on `http://localhost:3000` by default.
@@ -125,10 +149,10 @@ The retired `assistant_llm_mode` alias is rejected with `400` — use `assistant
 clients still sending it fail loudly instead of silently creating an assistant in the wrong mode.
 
 Only known `assistant_*` fields are forwarded — the list is `ASSISTANT_FIELDS` in
-`assistant.service.js`. A typo or a retired key (e.g. `interaction_config.user_stt_provider`) is
+`src/assistant/assistant.rules.js`. A typo or a retired key (e.g. `interaction_config.user_stt_provider`) is
 dropped rather than passed on for the external API to reject with `422`. Legacy local docs
-carrying `interaction_config.user_stt_provider` / `.stt_api_key` (or `stt_model: "openai"`) are
-fixed by `node scripts/migrate-stt-config.js`.
+carrying `interaction_config.user_stt_provider` / `.stt_api_key` (or `stt_model: "openai"`) were
+fixed by a one-time migration that has already run (see [Applied migrations](#applied-migrations)).
 
 Language fields, three of them, easy to confuse:
 - `assistant_tts_config.target_language_code` — **single string** (BCP-47). Sarvam TTS only.
@@ -177,7 +201,7 @@ STT API key resolution (pipeline and cascade):
 4. `assistant_stt_model: "native"` (pipeline only) needs no key at all; its config is forwarded verbatim.
 
 One provider, one row. The map of model → `service_name` lives in
-`src/modules/integration/providers.js`; `POST /api/integration/store` rejects any
+`src/integration/providers.js`; `POST /api/integration/store` rejects any
 `service_name` outside it with `400`.
 
 Other behavior:
@@ -265,36 +289,8 @@ Frontend flow: after `POST /store` (or `POST /resync`), poll `GET /resync-status
 `status !== "running"`; show `processed / total` progress, then `succeeded` and the `failed[]`
 list. Re-store the key or call `POST /resync` to retry failures.
 
-**One-time backfill (run once after deploy):** legacy assistants created before the `llm_provider`
-field existed are not matched by the LLM re-sync query. Backfill them:
-
-```bash
-node scripts/backfill-llm-provider.js
-```
-
-Idempotent, local-DB only (sets `llm_provider` from the stored `llm_config.provider`, else `openai`).
-
-**One-time TTS field rename (run once, before deploy):** the assistant's TTS fields are stored as
-`tts_model` / `tts_config`, matching `stt_model` / `stt_config`. They used to be `model` / `config`.
-The re-sync query matches on `tts_model`, so legacy documents stay invisible to it until renamed:
-
-```bash
-node scripts/migrate-tts-field-names.js
-```
-
-Idempotent, local-DB only. **Breaking for API consumers** — the `Assistant` response object (and
-`local_data` on update) now carries `tts_model` / `tts_config` instead of `model` / `config`.
-
-**One-time `sarvam_stt` cleanup (run once after deploy):** STT now reads the ordinary `sarvam`
-row, so `sarvam_stt` is gone from the provider map. Any leftover row is unreachable, and its
-re-sync job would keep appearing in `GET /resync-status` for a provider that no longer exists:
-
-```bash
-node scripts/drop-sarvam-stt-rows.js
-```
-
-Idempotent, local-DB only. Expect a count of `0` unless a `sarvam_stt` row was created by hand —
-the frontend never offered it. Storing that name now returns `400`.
+Legacy rows predating `llm_provider`, the `tts_model` / `tts_config` rename and the `sarvam_stt`
+provider have all been migrated — see [Applied migrations](#applied-migrations).
 
 ### Tool (`/api/tool`)
 
@@ -375,67 +371,93 @@ INTVyom_Backend/
 ├── docker-compose.yml
 ├── deploy.sh
 ├── .env.example
+├── AGENTS.md
+├── scripts/                  # one-off migrations and self-checks
+├── tests/                    # node --test suite, mirrors src/
 └── src/
-    ├── app.js
-    ├── config/
-    │   └── db.js
-    └── modules/
-        ├── analytics/
-        │   ├── analytics.controller.js
-        │   ├── analytics.routes.js
-        │   └── analytics.service.js
-        ├── auth/
-        │   ├── auth.controller.js
-        │   ├── auth.routes.js
-        │   ├── auth.service.js
-        │   └── user.model.js
-        ├── assistant/
-        │   ├── assistant.controller.js
-        │   ├── assistant.model.js
-        │   ├── assistant.routes.js
-        │   └── assistant.service.js
-        ├── call/
-        │   ├── call.controller.js
-        │   ├── call.routes.js
-        │   └── call.service.js
-        ├── inbound/
-        │   ├── inbound.controller.js
-        │   ├── inbound.model.js
-        │   ├── inbound.routes.js
-        │   └── inbound.service.js
-        ├── inbound-context-strategy/
-        │   ├── inbound-context-strategy.controller.js
-        │   ├── inbound-context-strategy.model.js
-        │   ├── inbound-context-strategy.routes.js
-        │   └── inbound-context-strategy.service.js
-        ├── integration/
-        │   ├── integration.controller.js
-        │   ├── integration.model.js
-        │   ├── integration.routes.js
-        │   └── integration.service.js
-        ├── shared/
-        │   └── remote.js          # callExternal, getUserWithKey, findByLocalOrExternalId (used by all modules)
-        ├── sip/
-        │   ├── sip.controller.js
-        │   ├── sip.model.js
-        │   ├── sip.routes.js
-        │   └── sip.service.js
-        ├── tool/
-        │   ├── tool.controller.js
-        │   ├── tool.model.js
-        │   ├── tool.routes.js
-        │   └── tool.service.js
-        ├── webcall/
-        │   ├── webcall.controller.js
-        │   ├── webcall.routes.js
-        │   └── webcall.service.js
-        └── passthrough_call/
-            ├── passthrough.controller.js
-            ├── passthrough.routes.js
-            └── passthrough.sevice.js
+    ├── index.js              # runner: config → connectDB → listen
+    ├── server.js             # wiring only: middleware, swagger, route mounts, error handlers
+    ├── api/
+    │   └── routes/           # one thin module per endpoint group (validation + delegation)
+    │       └── common.js     # route-level error-status helpers
+    ├── assistant/            # domain: orchestration + payload rules/builders + xlsx export
+    │   ├── assistant.service.js  # create/list/details/delete + public surface for the rest
+    │   ├── assistant.update.js   # update flow: target mode, upstream patch, local mirror
+    │   ├── assistant.billing.js  # call logs + billable-minute aggregation (paged)
+    │   ├── assistant.rules.js    # ASSISTANT_FIELDS, mode inference, pair resolution (pure)
+    │   ├── assistant.builder.js  # TTS/STT/LLM config construction + key resolution
+    │   ├── assistant.resync.js   # key-rotation re-sync job
+    │   └── exporter.js       # platform-wise billable minutes xlsx workbook
+    ├── auth/                 # domain: user lifecycle (register/login/key) + userAccess guard
+    ├── integration/          # domain: provider map (providers.js) + key storage/re-sync
+    ├── analytics/            # domain: analytics proxy
+    ├── call/                 # domain: outbound call trigger
+    ├── audio/                # domain: audio library proxy
+    ├── sip/                  # domain: SIP trunk CRUD
+    ├── tool/                 # domain: tool CRUD + attach/detach
+    ├── webcall/              # domain: web-call token
+    ├── inbound/              # domain: inbound mapping CRUD
+    ├── inbound-context-strategy/  # domain: context strategy CRUD
+    ├── passthrough/          # domain: web-to-SIP passthrough calls
+    ├── services/
+    │   └── livekit/          # the ONLY external HTTP client (callExternal) — axios lives here
+    │       └── livekitService.js
+    └── core/
+        ├── config.js         # Settings singleton — the only place process.env is read
+        ├── db/
+        │   ├── dbConnect.js
+        │   ├── schemas/      # one mongoose model per file (user, assistant, sip, tool, ...)
+        │   └── functions/    # query helpers (findByLocalOrExternalId)
+        ├── middleware/
+        │   ├── asyncHandler.js
+        │   ├── errorHandler.js   # one response shape for every error path
+        │   └── notFound.js
+        └── logging/logger.js
 ```
+
+Layer rules (see `.agents/skills/node-service-structure/`):
+- `src/api/routes/` — HTTP surface only: validate, delegate, shape. No queries, no external calls.
+- `src/<domain>/` — business logic and orchestration.
+- `src/services/<upstream>/` — external I/O clients only; `axios` appears nowhere else.
+- `src/core/` — config, DB access, middleware, logging. `process.env` appears nowhere else.
+- Every error path returns `{ error: message }` via `src/core/middleware/errorHandler.js` — handlers never build error bodies.
+- Logging goes through `getLogger(module)`; no `console.*` in application code, and never
+  log an upstream response body (they carry API keys).
+
+## Data Stores
+
+MongoDB, one collection per model in `src/core/db/schemas/`. Every resource row is
+scoped by `user_id`, and local rows carry the external LiveKit id so callers can use
+either identifier.
+
+| Collection | Keyed by | Holds |
+|---|---|---|
+| `users` | `user_email` (unique) | account, bcrypt password hash, external `api_key` |
+| `assistants` | `user_id` + `external_assistant_id` | name, prompt, `llm_mode` (pipeline/realtime/cascade), `llm_provider`, LLM/TTS/STT config, interaction + end-call settings, greeting audio |
+| `siptrunks` | `user_id` + `external_trunk_id` | trunk name, type (`twilio`/`exotel`), trunk config, passthrough mode + webhook |
+| `tools` | `user_id` + `external_tool_id` | tool name, description, execution type, parameters, execution config |
+| `inbounds` | `external_inbound_id` (unique) | phone number (raw + normalized), service, attached assistant, context-strategy id, inbound config |
+| `inboundcontextstrategies` | `external_strategy_id` (unique) | strategy name, type (default `webhook`), strategy config, active flag |
+| `integrations` | `user_id` + `service_name` (unique) | provider API key and its `service_type` (TTS/STT/LLM) |
+| `resyncjobs` | `user_id` + `service_name` (unique) | one key-rotation re-sync job: status, totals, per-assistant failures |
 
 ## Scripts
 
 - `npm start` - Start API server.
-- `npm test` - Placeholder script (currently exits with error by design).
+- `npm run dev` - Same, with `node --watch` auto-restart.
+- `npm test` - Run the `node --test` suite under `tests/`.
+- `node scripts/check-assistant-payload.js` - Self-check for assistant payload rules.
+- `node src/integration/providers.js` - Self-check for the provider key map.
+
+### Applied migrations
+
+These one-time scripts have run against production and were deleted afterwards — the schema
+they produced is the current one, so nothing needs re-running. Recover any of them from git
+history (`git log --diff-filter=D -- scripts/`) if an old database ever has to be brought forward.
+
+| Script | What it did |
+|---|---|
+| `migrate-stt-config.js` | dropped `interaction_config.user_stt_provider` / `.stt_api_key`, rewrote `stt_model: "openai"` |
+| `migrate-tts-field-names.js` | renamed assistant `model` / `config` to `tts_model` / `tts_config` |
+| `backfill-llm-provider.js` | set `llm_provider` from `llm_config.provider`, defaulting to `openai` |
+| `drop-sarvam-stt-rows.js` | removed unreachable `sarvam_stt` integration rows and their re-sync jobs |

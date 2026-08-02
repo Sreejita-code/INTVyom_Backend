@@ -14,4 +14,4 @@ COPY --chown=nonroot:nonroot src ./src
 COPY --chown=nonroot:nonroot swagger.yaml ./swagger.yaml
 
 EXPOSE 3000
-CMD ["src/app.js"]
+CMD ["src/index.js"]

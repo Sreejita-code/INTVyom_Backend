@@ -2746,8 +2746,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-
-  /api/audio/{audio_id}:
     delete:
       tags: [Audio]
       summary: Delete an audio file
