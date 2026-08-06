@@ -35,6 +35,21 @@ test('wiring: routes are mounted and validation errors are shaped centrally', as
 
   const missingAudioFile = await request(base, '/api/audio/upload', { method: 'POST' });
   assert.strictEqual(missingAudioFile.status, 400);
+
+  const missingInboundFields = await request(base, '/api/inbound/assign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: 'u1' }),
+  });
+  assert.strictEqual(missingInboundFields.status, 400);
+
+  // name may arrive as `name` or `strategy_name`; url is still mandatory.
+  const missingStrategyUrl = await request(base, '/api/inbound-context-strategy/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: 'u1', strategy_name: 'CRM', strategy_config: {} }),
+  });
+  assert.strictEqual(missingStrategyUrl.status, 400);
 });
 
 test('wiring: unknown routes hit the 404 fallback with the same envelope', async (t) => {

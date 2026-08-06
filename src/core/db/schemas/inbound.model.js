@@ -12,7 +12,9 @@ const InboundSchema = new mongoose.Schema({
   assistant_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Assistant', default: null },
   external_assistant_id: { type: String, default: null },
   
-  inbound_context_strategy_id: { type: String, default: null }, // Stored as string since we don't have a strategy model yet
+  // Holds the EXTERNAL strategy id (not a local ref) — it is what upstream echoes back
+  // and what the delete cascade matches on.
+  inbound_context_strategy_id: { type: String, default: null },
   
   service: { type: String, required: true },
   phone_number: { type: String, required: true },

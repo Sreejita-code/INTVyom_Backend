@@ -10,6 +10,14 @@ const preserveStatus = (status) => (error) => {
   throw error;
 };
 
+// Keep the status the upstream API already gave us (404 not found, 409 duplicate number,
+// 422 validation) and only fall back when the error carries none. Use this instead of
+// preserveStatus wherever the external status is meaningful to the caller.
+const keepStatus = (fallback) => (error) => {
+  error.status = error.status || fallback;
+  throw error;
+};
+
 // "not found" in the message → 404, anything else → 500 (legacy webcall/passthrough behavior).
 const mapNotFoundTo404 = (error) => {
   error.status = error.message.includes('not found') ? 404 : 500;
@@ -29,4 +37,4 @@ const httpError = (status, message) => {
   return error;
 };
 
-module.exports = { preserveStatus, mapNotFoundTo404, mapInvalidCredentials, httpError };
+module.exports = { preserveStatus, keepStatus, mapNotFoundTo404, mapInvalidCredentials, httpError };

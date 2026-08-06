@@ -1960,7 +1960,12 @@ paths:
     post:
       tags: [Inbound]
       summary: Assign assistant to inbound number
-      description: Assigns an assistant to handle inbound calls on a specific phone number.
+      description: |
+        Assigns an assistant to handle inbound calls on a specific phone number.
+
+        An assistant is required for the number to route calls. A context strategy is
+        optional — without one the call routes normally with no caller-context lookup and
+        no added latency.
       requestBody:
         required: true
         content:
@@ -1987,7 +1992,9 @@ paths:
                       example: "+1234567890"
                 inbound_context_strategy_id:
                   type: string
-                  description: Optional context strategy ID
+                  description: >-
+                    Optional. Local _id or external_strategy_id of an inbound context
+                    strategy. Omit to route without any caller-context lookup.
       responses:
         '201':
           description: Inbound assignment created
@@ -2002,8 +2009,28 @@ paths:
                     type: string
                   phone_number:
                     type: string
+                  phone_number_normalized:
+                    type: string
+                  inbound_context_strategy_id:
+                    type: string
+                    nullable: true
+                  inbound_context_strategy_name:
+                    type: string
+                    nullable: true
         '400':
-          description: Missing required fields
+          description: Missing required fields, unsupported service, or invalid phone number
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assistant or inbound context strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Normalized number is already assigned to an active mapping
           content:
             application/json:
               schema:
@@ -2019,7 +2046,10 @@ paths:
     get:
       tags: [Inbound]
       summary: List inbound configurations
-      description: Retrieves all inbound call configurations.
+      description: |
+        Retrieves all inbound call configurations. Each entry includes
+        `assistant_name` and `inbound_context_strategy_name` resolved for convenience;
+        both are null when nothing is attached.
       parameters:
         - name: user_id
           in: query
@@ -2052,8 +2082,11 @@ paths:
       tags: [Inbound]
       summary: Update inbound configuration
       description: |
-        Updates an inbound configuration. Pass `null` for assistant_id to detach
-        the current assistant.
+        Updates an inbound configuration. Send `assistant_id`,
+        `inbound_context_strategy_id`, or both — at least one is required.
+
+        Pass `null` for either field to detach it. Detaching the strategy leaves the
+        number routing normally, without caller-context lookup.
       parameters:
         - name: id
           in: path
@@ -2073,9 +2106,12 @@ paths:
                 assistant_id:
                   type: string
                   nullable: true
-                  description: Pass null to detach assistant
+                  description: Local _id or external id. Pass null to detach the assistant.
                 inbound_context_strategy_id:
                   type: string
+                  nullable: true
+                  description: >-
+                    Local _id or external_strategy_id. Pass null to detach the strategy.
       responses:
         '200':
           description: Inbound updated
@@ -2083,6 +2119,18 @@ paths:
             application/json:
               schema:
                 type: object
+        '400':
+          description: No updatable field provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Inbound mapping, assistant, or strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Server error
           content:
@@ -2094,7 +2142,9 @@ paths:
     post:
       tags: [Inbound]
       summary: Detach assistant from inbound
-      description: Detaches the assigned assistant from an inbound configuration.
+      description: |
+        Detaches the assigned assistant from an inbound configuration. Also clears
+        `inbound_context_strategy_id`. The mapping stays active and listed.
       parameters:
         - name: id
           in: path
@@ -2140,7 +2190,10 @@ paths:
     delete:
       tags: [Inbound]
       summary: Delete inbound configuration
-      description: Deletes an inbound configuration from both local DB and external API.
+      description: |
+        Deletes an inbound configuration from both local DB and external API. Upstream
+        marks the mapping inactive, clears its attachments, and releases the normalized
+        number for reuse.
       parameters:
         - name: id
           in: path
@@ -2187,7 +2240,16 @@ paths:
     post:
       tags: [Inbound Context Strategy]
       summary: Create an inbound context strategy
-      description: Creates a webhook-based context strategy for inbound calls.
+      description: |
+        Creates a webhook-based context strategy for inbound calls. The strategy is
+        attached to an inbound *number* (via /api/inbound), not to an assistant.
+
+        The webhook is called once per inbound call, before the prompt renders, and its
+        `context` object becomes available as `{{context.*}}` placeholders. A failing
+        lookup never fails the call.
+
+        The URL is validated upstream: `http`/`https` only, and the host must not be a
+        private, loopback, link-local, reserved, or internal address.
       requestBody:
         required: true
         content:
@@ -2214,6 +2276,25 @@ paths:
                       type: string
                       format: uri
                       example: "https://example.com/webhook/context"
+                    headers:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: >-
+                        Headers sent to your webhook. Secret-looking values
+                        (authorization, token, secret, api-key, password) come back
+                        masked as **** from list/details.
+                      example:
+                        Authorization: "Bearer crm-token"
+                    timeout_seconds:
+                      type: number
+                      default: 2.0
+                      minimum: 0.5
+                      maximum: 10.0
+                      description: >-
+                        Blocks the start of the call — keep it low. A 10s timeout means
+                        up to 10s of silence for the caller.
+                      example: 2.0
       responses:
         '201':
           description: Strategy created
@@ -2226,6 +2307,14 @@ paths:
                     type: boolean
                   data:
                     type: object
+        '400':
+          description: >-
+            Missing fields, rejected URL, timeout_seconds out of range, or a masked ****
+            header value sent as if it were real
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Server error
           content:
@@ -2237,7 +2326,9 @@ paths:
     get:
       tags: [Inbound Context Strategy]
       summary: List inbound context strategies
-      description: Retrieves all inbound context strategies.
+      description: |
+        Retrieves all active inbound context strategies. Secret header values are
+        returned masked as `****` — never send a masked value back on update.
       parameters:
         - name: user_id
           in: query
@@ -2269,13 +2360,16 @@ paths:
     get:
       tags: [Inbound Context Strategy]
       summary: Get strategy details
-      description: Retrieves details for a specific inbound context strategy.
+      description: |
+        Retrieves details for a specific inbound context strategy. Secret header values
+        are returned masked as `****`; echoing a mask back on update is rejected.
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: string
+          description: Local _id or external_strategy_id
         - name: user_id
           in: query
           required: true
@@ -2299,6 +2393,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '404':
+          description: Strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Server error
           content:
@@ -2310,13 +2410,23 @@ paths:
     patch:
       tags: [Inbound Context Strategy]
       summary: Update a strategy
-      description: Updates an inbound context strategy locally and externally.
+      description: |
+        Updates an inbound context strategy. Send at least one of `name` or
+        `strategy_config`.
+
+        `strategy_config` keys replace outright, **except** `headers`, which merges key
+        by key: send only the headers you are changing, and send a header with value
+        `null` to delete just that one. Everything you omit is left untouched.
+
+        Never send back a `****` value from list/details — it is a mask, not the stored
+        secret, and it is rejected with 400.
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: string
+          description: Local _id or external_strategy_id
       requestBody:
         required: true
         content:
@@ -2329,12 +2439,32 @@ paths:
                   type: string
                 name:
                   type: string
+                type:
+                  type: string
+                  default: webhook
+                  description: >-
+                    Optional. Defaults to the stored type; sent to upstream alongside
+                    strategy_config, which upstream requires as a pair.
                 strategy_config:
                   type: object
                   properties:
                     url:
                       type: string
                       format: uri
+                    headers:
+                      type: object
+                      nullable: true
+                      additionalProperties:
+                        type: string
+                        nullable: true
+                      description: Merged key by key. A null value deletes that header.
+                      example:
+                        Authorization: "Bearer rotated-token"
+                        X-Tenant-Id: null
+                    timeout_seconds:
+                      type: number
+                      minimum: 0.5
+                      maximum: 10.0
       responses:
         '200':
           description: Strategy updated
@@ -2342,6 +2472,20 @@ paths:
             application/json:
               schema:
                 type: object
+        '400':
+          description: >-
+            No fields provided, rejected URL, timeout_seconds out of range, or a masked
+            **** header value echoed back
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Strategy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: Server error
           content:
@@ -2353,13 +2497,19 @@ paths:
     delete:
       tags: [Inbound Context Strategy]
       summary: Delete a strategy
-      description: Deletes an inbound context strategy from both local DB and external API.
+      description: |
+        Deletes an inbound context strategy from both local DB and external API.
+
+        Cascades: every inbound mapping that referenced this strategy is detached from it
+        (`inbound_context_strategy_id` set to null). The mappings themselves are not
+        deleted and keep routing calls — just without caller-context lookup.
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: string
+          description: Local _id or external_strategy_id
         - name: user_id
           in: query
           required: true
@@ -2384,6 +2534,12 @@ paths:
                 type: object
         '400':
           description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Strategy not found
           content:
             application/json:
               schema:

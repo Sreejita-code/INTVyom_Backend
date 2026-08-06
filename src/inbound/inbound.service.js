@@ -1,5 +1,6 @@
 const Inbound = require('../core/db/schemas/inbound.model');
 const Assistant = require('../core/db/schemas/assistant.model');
+const InboundContextStrategy = require('../core/db/schemas/inbound-context-strategy.model');
 const { callExternal } = require('../services/livekit/livekitService');
 const getUserWithKey = require('../auth/userAccess');
 const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExternalId');
@@ -7,7 +8,11 @@ const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExter
 // Helper to resolve Inbound ID
 const resolveInboundId = async (userId, inboundId) => {
   const inbound = await findByLocalOrExternalId(Inbound, inboundId, userId, 'external_inbound_id');
-  if (!inbound) throw new Error('Inbound mapping not found');
+  if (!inbound) {
+    const error = new Error('Inbound mapping not found');
+    error.status = 404;
+    throw error;
+  }
   return inbound;
 };
 
@@ -15,8 +20,25 @@ const resolveInboundId = async (userId, inboundId) => {
 const resolveAssistantId = async (userId, assistantId) => {
   if (assistantId === null) return { _id: null, external_assistant_id: null };
   const assistant = await findByLocalOrExternalId(Assistant, assistantId, userId, 'external_assistant_id');
-  if (!assistant) throw new Error('Assistant not found');
+  if (!assistant) {
+    const error = new Error('Assistant not found');
+    error.status = 404;
+    throw error;
+  }
   return assistant;
+};
+
+// Helper to resolve Strategy ID — callers may pass a local Mongo _id or the external id,
+// same as everywhere else in this API. null means "detach", so it passes straight through.
+const resolveStrategyExternalId = async (userId, strategyId) => {
+  if (strategyId === null) return null;
+  const strategy = await findByLocalOrExternalId(InboundContextStrategy, strategyId, userId, 'external_strategy_id');
+  if (!strategy) {
+    const error = new Error('Inbound context strategy not found');
+    error.status = 404;
+    throw error;
+  }
+  return strategy.external_strategy_id;
 };
 
 // --- 1. Assign Inbound Number ---
@@ -40,7 +62,9 @@ const assignInbound = async (data) => {
     service,
     inbound_config
   };
-  if (inbound_context_strategy_id) externalPayload.inbound_context_strategy_id = inbound_context_strategy_id;
+  if (inbound_context_strategy_id) {
+    externalPayload.inbound_context_strategy_id = await resolveStrategyExternalId(user._id, inbound_context_strategy_id);
+  }
 
   const externalResponseData = await callExternal(user.api_key, {
     method: 'post',
@@ -96,10 +120,17 @@ const updateInbound = async (userId, inboundId, updateData) => {
     }
   }
 
-  // Handle Strategy Update/Detach
+  // Handle Strategy Update/Detach (null detaches)
   if (updateData.inbound_context_strategy_id !== undefined) {
-    externalPayload.inbound_context_strategy_id = updateData.inbound_context_strategy_id;
-    localUpdate.inbound_context_strategy_id = updateData.inbound_context_strategy_id;
+    const externalStrategyId = await resolveStrategyExternalId(user._id, updateData.inbound_context_strategy_id);
+    externalPayload.inbound_context_strategy_id = externalStrategyId;
+    localUpdate.inbound_context_strategy_id = externalStrategyId;
+  }
+
+  if (Object.keys(externalPayload).length === 0) {
+    const error = new Error('Provide assistant_id and/or inbound_context_strategy_id to update');
+    error.status = 400;
+    throw error;
   }
 
   const result = await callExternal(user.api_key, {

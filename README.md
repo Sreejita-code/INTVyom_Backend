@@ -317,19 +317,37 @@ Prerequisites: a SIP trunk created with `passthrough_mode: true`.
 
 ### Inbound (`/api/inbound`)
 
-- `POST /assign` - Assign inbound number.
-- `GET /list?user_id=...` - List inbound mappings.
-- `PATCH /update/:id` - Update inbound mapping (`user_id` in body).
-- `POST /detach/:id` - Detach inbound mapping (`user_id` in query/body).
-- `DELETE /delete/:id` - Delete inbound mapping (`user_id` in query/body).
+A mapping needs an assistant to route calls; a context strategy is optional. Without one
+the number routes normally, with no caller-context lookup and no added latency.
+
+- `POST /assign` - Assign inbound number. `inbound_context_strategy_id` is optional and takes a local `_id` or the external id. 404 if the assistant or strategy is unknown, 409 if the number is already assigned.
+- `GET /list?user_id=...` - List inbound mappings, including `assistant_name` and `inbound_context_strategy_name`.
+- `PATCH /update/:id` - Update inbound mapping (`user_id` in body). Send `assistant_id` and/or `inbound_context_strategy_id`; `null` detaches either one.
+- `POST /detach/:id` - Detach inbound mapping (`user_id` in query/body). Clears both the assistant and the strategy; the mapping stays active.
+- `DELETE /delete/:id` - Delete inbound mapping (`user_id` in query/body). Releases the normalized number for reuse.
 
 ### Inbound Context Strategy (`/api/inbound-context-strategy`)
 
-- `POST /create` - Create strategy.
+A strategy attaches to an inbound *number*, not to an assistant, so the same assistant can
+answer three numbers with three different strategies. The webhook fires once per call
+before the prompt renders; its `context` object becomes `{{context.*}}`. A failing lookup
+never fails the call — the prompt just renders those placeholders empty.
+
+- `POST /create` - Create strategy. `strategy_config`: `url` (http/https, no private or internal hosts), optional `headers`, optional `timeout_seconds` (`0.5`-`10.0`, default `2.0` — it blocks the start of the call, so keep it low).
 - `GET /list?user_id=...` - List strategies.
 - `GET /details/:id?user_id=...` - Strategy details.
-- `PATCH /update/:id` - Update strategy (`user_id` in body).
-- `DELETE /delete/:id` - Delete strategy (`user_id` in query/body).
+- `PATCH /update/:id` - Update strategy (`user_id` in body). `headers` merges key by key: send only what you are changing, and send a header with value `null` to delete it. Other `strategy_config` keys replace outright.
+- `DELETE /delete/:id` - Delete strategy (`user_id` in query/body). Cascades: every inbound mapping referencing it is detached from the strategy, but keeps routing.
+
+Secret-looking header values (`authorization`, `token`, `secret`, `api-key`, `password`)
+come back masked as `****` from list/details. Sending a mask back on update is rejected
+with 400 — that guard is what stops a fetch-edit-save round trip from overwriting a real
+token with the literal string `****`.
+
+Strategy ids and inbound ids accept either the local Mongo `_id` or the external id.
+Validation of url, headers, and timeout is owned by the external API; its status and
+message pass through unchanged (FastAPI `detail` entries are flattened to
+`field: message`).
 
 ### Analytics (`/api/analytics`)
 
@@ -437,7 +455,7 @@ either identifier.
 | `siptrunks` | `user_id` + `external_trunk_id` | trunk name, type (`twilio`/`exotel`), trunk config, passthrough mode + webhook |
 | `tools` | `user_id` + `external_tool_id` | tool name, description, execution type, parameters, execution config |
 | `inbounds` | `external_inbound_id` (unique) | phone number (raw + normalized), service, attached assistant, context-strategy id, inbound config |
-| `inboundcontextstrategies` | `external_strategy_id` (unique) | strategy name, type (default `webhook`), strategy config, active flag |
+| `inboundcontextstrategies` | `external_strategy_id` (unique) | strategy name and type (default `webhook`) only — `strategy_config` lives upstream, which merges headers and masks secrets, so a local copy would go stale |
 | `integrations` | `user_id` + `service_name` (unique) | provider API key and its `service_type` (TTS/STT/LLM) |
 | `resyncjobs` | `user_id` + `service_name` (unique) | one key-rotation re-sync job: status, totals, per-assistant failures |
 
