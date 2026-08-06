@@ -4,16 +4,26 @@ const InboundContextStrategy = require('../core/db/schemas/inbound-context-strat
 const { callExternal } = require('../services/livekit/livekitService');
 const getUserWithKey = require('../auth/userAccess');
 const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExternalId');
+const { getLogger } = require('../core/logging/logger');
 
-// Helper to resolve Inbound ID
+const logger = getLogger('inbound.service');
+
+// Helper to resolve Inbound ID.
+// ponytail: upstream is the source of truth for mappings (/inbound/list is a straight
+// passthrough), so a missing local mirror row must not block update/detach/delete. When the
+// caller passes an external id we have no row for, use it as-is and let upstream 404 if it
+// is bogus — the call is authenticated with that user's api_key, so ownership still holds.
+// Local writes downstream are skipped when _id is null.
 const resolveInboundId = async (userId, inboundId) => {
   const inbound = await findByLocalOrExternalId(Inbound, inboundId, userId, 'external_inbound_id');
-  if (!inbound) {
+  if (inbound) return inbound;
+
+  if (inboundId.match(/^[0-9a-fA-F]{24}$/)) {
     const error = new Error('Inbound mapping not found');
     error.status = 404;
     throw error;
   }
-  return inbound;
+  return { _id: null, external_inbound_id: inboundId };
 };
 
 // Helper to resolve Assistant ID
@@ -87,7 +97,13 @@ const assignInbound = async (data) => {
     inbound_config: extData.inbound_config
   });
 
-  await newInbound.save();
+  // ponytail: mirror save is best-effort. Upstream already owns the mapping at this point,
+  // and resolveInboundId works without a local row, so failing the whole request here would
+  // only hide a mapping the caller can still use. Log loud and return the upstream result.
+  await newInbound.save().catch((err) =>
+    logger.error('mirror row not saved for inbound', extData.inbound_id, '-', err.message)
+  );
+
   return externalResponseData;
 };
 
@@ -141,7 +157,7 @@ const updateInbound = async (userId, inboundId, updateData) => {
   });
 
   // Update Local DB
-  if (Object.keys(localUpdate).length > 0) {
+  if (inbound._id && Object.keys(localUpdate).length > 0) {
     await Inbound.findByIdAndUpdate(inbound._id, { $set: localUpdate });
   }
 
@@ -162,7 +178,7 @@ const detachInbound = async (userId, inboundId) => {
   });
 
   // Update Local DB (Set relations to null)
-  await Inbound.findByIdAndUpdate(inbound._id, {
+  if (inbound._id) await Inbound.findByIdAndUpdate(inbound._id, {
     $set: {
       assistant_id: null,
       external_assistant_id: null,
@@ -186,7 +202,7 @@ const deleteInbound = async (userId, inboundId) => {
   });
 
   // Delete locally
-  await Inbound.findByIdAndDelete(inbound._id);
+  if (inbound._id) await Inbound.findByIdAndDelete(inbound._id);
   return result;
 };
 
