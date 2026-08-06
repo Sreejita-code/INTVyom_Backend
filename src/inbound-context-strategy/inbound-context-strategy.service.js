@@ -3,6 +3,9 @@ const Inbound = require('../core/db/schemas/inbound.model');
 const { callExternal } = require('../services/livekit/livekitService');
 const getUserWithKey = require('../auth/userAccess');
 const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExternalId');
+const { getLogger } = require('../core/logging/logger');
+
+const logger = getLogger('inbound-context-strategy.service');
 
 const PREFIX = '/inbound_context_strategy';
 
@@ -31,15 +34,22 @@ const strategyError = (data) => {
   return JSON.stringify(data) || 'External API Error';
 };
 
-// Helper to resolve Strategy ID (Local Mongo vs External)
+// Helper to resolve Strategy ID (Local Mongo vs External).
+// ponytail: same contract as resolveInboundId in inbound.service.js — upstream owns
+// strategies (/list and /details are passthroughs), so a missing local mirror row must not
+// block details/update/delete. A non-24-hex id with no row is used as the external id and
+// upstream 404s if bogus; the call carries that user's api_key, so ownership still holds.
+// Local writes downstream are skipped when _id is null.
 const resolveStrategyId = async (userId, strategyId) => {
   const strategy = await findByLocalOrExternalId(InboundContextStrategy, strategyId, userId, 'external_strategy_id');
-  if (!strategy) {
+  if (strategy) return strategy;
+
+  if (strategyId.match(/^[0-9a-fA-F]{24}$/)) {
     const error = new Error('Strategy not found');
     error.status = 404;
     throw error;
   }
-  return strategy;
+  return { _id: null, external_strategy_id: strategyId };
 };
 
 // --- 1. Create Strategy ---
@@ -78,7 +88,13 @@ const createStrategy = async (data) => {
     type: extData.strategy_type || extData.type || type,
   });
 
-  await newStrategy.save();
+  // ponytail: best-effort, same as assignInbound — upstream already owns the strategy and
+  // resolveStrategyId works without a local row, so a mirror failure must not 500 a call
+  // that succeeded.
+  await newStrategy.save().catch((err) =>
+    logger.error('mirror row not saved for strategy', newStrategy.external_strategy_id, '-', err.message)
+  );
+
   return externalResponseData;
 };
 
@@ -144,7 +160,7 @@ const updateStrategy = async (userId, strategyId, updateData) => {
   if (name) localUpdate.name = name;
   if (type) localUpdate.type = type;
 
-  if (Object.keys(localUpdate).length > 0) {
+  if (strategy._id && Object.keys(localUpdate).length > 0) {
     await InboundContextStrategy.findByIdAndUpdate(strategy._id, { $set: localUpdate });
   }
 
@@ -171,7 +187,7 @@ const deleteStrategy = async (userId, strategyId) => {
     { $set: { inbound_context_strategy_id: null } }
   );
 
-  await InboundContextStrategy.findByIdAndDelete(strategy._id);
+  if (strategy._id) await InboundContextStrategy.findByIdAndDelete(strategy._id);
   return result;
 };
 

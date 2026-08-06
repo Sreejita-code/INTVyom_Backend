@@ -43,12 +43,16 @@ const resolveAssistantId = async (userId, assistantId) => {
 const resolveStrategyExternalId = async (userId, strategyId) => {
   if (strategyId === null) return null;
   const strategy = await findByLocalOrExternalId(InboundContextStrategy, strategyId, userId, 'external_strategy_id');
-  if (!strategy) {
+  if (strategy) return strategy.external_strategy_id;
+
+  // ponytail: no mirror row for an external id is not fatal — hand it to upstream, which
+  // rejects it if the strategy does not exist under this user's api_key.
+  if (strategyId.match(/^[0-9a-fA-F]{24}$/)) {
     const error = new Error('Inbound context strategy not found');
     error.status = 404;
     throw error;
   }
-  return strategy.external_strategy_id;
+  return strategyId;
 };
 
 // --- 1. Assign Inbound Number ---
