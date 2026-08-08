@@ -92,11 +92,21 @@ info:
     and the platform degrades that call to native transcription, so switching the assistant to
     `cascade` later needs no second edit. Ignored entirely in `realtime` mode.
 
-    **Auto-detect is not uniform — this is the trap.** With `language` omitted: `sarvam`
-    (`unknown`) and `elevenlabs` auto-detect, but `deepgram` and `openai` fall back to
-    `preferred_languages[0]` and then to **`en`**, and `cartesia` never auto-detects at all. For a
-    multilingual caller set `deepgram` `language: "multi"` or `openai` `detect_language: true`
-    explicitly. A pinned ElevenLabs `language_code` **disables** its auto-detect.
+    **Each provider speaks its own language-code standard — this is the trap.** `sarvam` takes
+    BCP-47 Indic (`hi-IN`), `cartesia` and `openai` take ISO 639-1 (`hi`), `deepgram` takes
+    BCP-47 (`hi-IN`), and `elevenlabs` takes **ISO 639-3** (`hin`). A code from the wrong
+    standard is rejected (logged) and the provider default applies — on ElevenLabs it used to
+    close the connection with `1008 invalid_request` and transcribe nothing at all.
+
+    **Omitting the language auto-detects everywhere except Cartesia.** `sarvam` → `unknown`;
+    `elevenlabs` → no code sent (~190 languages); `openai` → `detect_language` on; `deepgram` →
+    `multi` on `nova-3` / `flux-general-multi` (billed at a higher per-minute rate), `en-US` on
+    `nova-2` / `flux-general-en`, which cannot detect; `cartesia` → `en`, because Cartesia has no
+    detection at all. A pinned ElevenLabs `language_code` **disables** its auto-detect.
+
+    **`assistant_interaction_config.preferred_languages` is not a language parameter.** It hints
+    the native transcription prompt and is never sent to a speech provider — it does not pin a
+    language and does not disable auto-detect.
 
     Sarvam's `codemix` + `language=unknown` is the multilingual combination; 24 codes: `as`, `bn`,
     `brx`, `doi`, `en`, `gu`, `hi`, `kn`, `kok`, `ks`, `mai`, `ml`, `mni`, `mr`, `ne`, `od`, `pa`,
@@ -3309,10 +3319,12 @@ components:
           default: []
           example: ["hi-IN", "en-US"]
           description: >
-            BCP-47 codes hinting the STT model for multilingual or code-switched speakers.
-            This is the only language input that is a LIST — the per-provider TTS/STT language
-            fields (`assistant_tts_config.target_language_code`,
-            `assistant_stt_config.language`) are each a single string. Empty list = auto-detect.
+            BCP-47 codes hinting the transcription PROMPT when the language model transcribes
+            the call itself. It is never sent to a speech provider as a language parameter: it
+            does not pin a language and does not disable auto-detect. To fix a language, set it
+            on `assistant_stt_config`. This is the only language input that is a LIST — the
+            per-provider TTS/STT language fields (`assistant_tts_config.target_language_code`,
+            `assistant_stt_config.language`) are each a single string.
 
     AssistantLlmConfig:
       type: object
@@ -3418,10 +3430,13 @@ components:
         target_language_code:
           type: string
           description: >
-            Sarvam only. A SINGLE BCP-47 string, not a list. Omit and the platform substitutes
-            `en-IN`. NOTE: assistants created before this default was corrected have `bn-IN`
-            written into their stored config — send the field explicitly to fix them. For a
-            multilingual agent set `assistant_interaction_config.preferred_languages` instead.
+            Sarvam only. A SINGLE BCP-47 string, not a list. Bulbul speaks 11 codes and nothing
+            else: `bn-IN`, `en-IN`, `gu-IN`, `hi-IN`, `kn-IN`, `ml-IN`, `mr-IN`, `od-IN`,
+            `pa-IN`, `ta-IN`, `te-IN` — note `en-IN`, NOT `en-US`, which looks reasonable and is
+            rejected. Anything outside the list falls back to `en-IN` with a logged warning.
+            Omit and the platform substitutes `en-IN`. NOTE: assistants created before this
+            default was corrected have `bn-IN` written into their stored config — send the
+            field explicitly to fix them.
           example: "hi-IN"
         pace:
           type: number
@@ -3526,11 +3541,15 @@ components:
         accepted and stored, but that call transcribes natively — the selection takes effect
         when the assistant moves to `cascade`. Ignored entirely in `realtime`.
 
-        LANGUAGE DEFAULTS ARE NOT UNIFORM. Omitting the language field auto-detects on
-        `sarvam` and `elevenlabs`, but falls back to `preferred_languages[0]` then plain `en`
-        on `deepgram` and `openai`, and `cartesia` cannot auto-detect at all. For a caller who
-        may switch languages, set `deepgram` `language: multi` or `openai`
-        `detect_language: true` explicitly — do not rely on the omission.
+        LANGUAGE CODE STANDARDS DIFFER PER PROVIDER and are not interchangeable: `sarvam`
+        BCP-47 Indic (`hi-IN`), `cartesia` and `openai` ISO 639-1 (`hi`), `deepgram` BCP-47
+        (`hi-IN`), `elevenlabs` ISO 639-3 (`hin`). A code from the wrong standard is rejected
+        and the provider default applies.
+
+        OMITTING THE LANGUAGE AUTO-DETECTS everywhere except `cartesia`, which has no detection
+        and falls back to `en`. `deepgram` auto-detect means `multi`, which is billed at a
+        higher per-minute rate — pin a code to avoid it.
+        `assistant_interaction_config.preferred_languages` is NOT consulted for any of this.
       properties:
         model:
           type: string
@@ -3547,12 +3566,18 @@ components:
         language:
           type: string
           description: >
-            Sarvam / Cartesia / Deepgram / OpenAI. A SINGLE BCP-47 string, not a list — the
-            list field is `assistant_interaction_config.preferred_languages`.
-            Sarvam: `unknown` (default) auto-detects. Cartesia: a fixed code, no auto-detect.
-            Deepgram: a fixed code, or `multi` to auto-detect per segment (billed at a higher
-            per-minute rate than monolingual). OpenAI: an ISO-639-1 code; omitting does NOT
-            auto-detect, and it is ignored when `detect_language` is true.
+            Sarvam / Cartesia / Deepgram / OpenAI. A SINGLE string, not a list — and the code
+            standard depends on the provider, so the same value is not portable between them.
+            Sarvam: BCP-47 Indic (`hi-IN`); `unknown` (default) auto-detects.
+            Cartesia: ISO 639-1 (`hi`) — NOT `hi-IN`; a fixed code, no auto-detect, omitted
+            means `en`.
+            Deepgram: BCP-47 (`hi-IN`) or `multi` to auto-detect per segment (billed higher);
+            omitted means `multi` on `nova-3` / `flux-general-multi` and `en-US` on the models
+            that cannot detect. On the `flux` models this is only a hint, read by
+            `flux-general-multi` alone.
+            OpenAI: ISO 639-1 (`hi`) — NOT `hi-IN`; omitting it turns `detect_language` on, and
+            it is ignored when `detect_language` is true.
+            An unrecognized code for the selected provider is rejected and the default applies.
           example: "hi-IN"
         mode:
           type: string
@@ -3584,10 +3609,13 @@ components:
         language_code:
           type: string
           description: >
-            ElevenLabs only (its spelling of `language`). SETTING IT DISABLES AUTO-DETECT and
-            pins the language, so a caller who switches mid-call is mis-transcribed. Omit it —
-            and leave `preferred_languages` empty — to auto-detect ~190 languages.
-          example: "hi-IN"
+            ElevenLabs only (its spelling of `language`). ISO 639-3 ONLY — `hin`, `eng`,
+            `ben`; NOT BCP-47 (`hi-IN`) and NOT ISO 639-1 (`hi`). ElevenLabs Scribe answers a
+            wrong-standard code with `1008 invalid_request` and closes the connection, so such
+            a code is rejected before it is sent and the call auto-detects instead.
+            SETTING A VALID CODE DISABLES AUTO-DETECT and pins the language, so a caller who
+            switches mid-call is mis-transcribed. Omit it to auto-detect ~190 languages.
+          example: "hin"
         no_verbatim:
           type: boolean
           default: false

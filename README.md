@@ -162,12 +162,17 @@ dropped rather than passed on for the external API to reject with `422`. Legacy 
 carrying `interaction_config.user_stt_provider` / `.stt_api_key` (or `stt_model: "openai"`) were
 fixed by a one-time migration that has already run (see [Applied migrations](#applied-migrations)).
 
-Language fields, three of them, easy to confuse:
-- `assistant_tts_config.target_language_code` — **single string** (BCP-47). Sarvam TTS only.
-- `assistant_stt_config.language` — **single string** (BCP-47, or `unknown` to auto-detect).
+Language fields, three of them, easy to confuse — and each in a different code standard:
+- `assistant_tts_config.target_language_code` — **single string**, BCP-47 Indic. Sarvam TTS
+  only, and only the 11 codes Bulbul speaks (`en-IN`, not `en-US`).
+- `assistant_stt_config.language` / `.language_code` — **single string**, in whichever standard
+  the selected STT provider speaks: sarvam BCP-47 Indic (`hi-IN`), cartesia and openai
+  ISO 639-1 (`hi`), deepgram BCP-47 (`hi-IN`), elevenlabs **ISO 639-3** (`hin`). Not portable
+  between providers; a wrong-standard code is rejected upstream and the provider default applies.
 - `assistant_interaction_config.preferred_languages` — **array of strings**, e.g.
-  `["hi-IN", "en-US"]`. The only list-valued one. Hints the STT model for multilingual or
-  code-switched speakers; `[]` reverts to auto-detection.
+  `["hi-IN", "en-US"]`. The only list-valued one, and the only one that is *not* a provider
+  parameter: it hints the native transcription prompt, never pins a language, and never turns
+  auto-detect off.
 
 Update semantics (mirrors the external API's validation rules):
 - Mode only changes on an explicit `assistant_mode`, or when TTS/STT fields are present.
@@ -269,14 +274,19 @@ STT — five plugin providers plus `native`:
 | `sarvam` | `saaras:v3` (also `saaras:v2.5`, `saarika:v2.5`) | `language` `unknown` auto-detects (24 `-IN` codes); `mode` `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`), honored in pipeline **and** cascade |
 | `cartesia` | `ink-whisper` (43 languages) / `ink-2` (English only) | fixed `language`, no auto-detect |
 | `deepgram` | `nova-3` (45 languages) / `nova-2` / `flux-general-en` / `flux-general-multi` | `language` (BCP-47 or `multi`), `enable_diarization` (nova only), `keyterm` (`nova-3`/`flux` only) |
-| `elevenlabs` | `scribe_v2_realtime` (~190 languages) / `scribe_v2` / `scribe_v1` | `language_code` (setting it disables auto-detect), `no_verbatim` |
+| `elevenlabs` | `scribe_v2_realtime` (~190 languages) / `scribe_v2` / `scribe_v1` | `language_code` — **ISO 639-3** (`hin`), setting it disables auto-detect; `no_verbatim` |
 | `openai` | `gpt-4o-mini-transcribe` / `gpt-4o-transcribe` / `whisper-1` | `detect_language`, `language`, `prompt` (`whisper-1` only), `noise_reduction_type`, `use_realtime` (default `true`) |
 | `native` | pipeline only — the realtime LLM transcribes itself | no config |
 
-**Auto-detect is not uniform.** With the language field omitted, `sarvam` and `elevenlabs`
-auto-detect, but `deepgram` and `openai` fall back to `preferred_languages[0]` and then to plain
-`en`, and `cartesia` never auto-detects. For a caller who may switch languages, set `deepgram`
-`language: "multi"` or `openai` `detect_language: true` explicitly.
+**Omitting the language auto-detects everywhere except Cartesia.** `sarvam` → `unknown`;
+`elevenlabs` → no code sent (~190 languages); `openai` → `detect_language` on; `deepgram` →
+`multi` on `nova-3`/`flux-general-multi` (billed at a higher per-minute rate) and `en-US` on the
+models that cannot detect; `cartesia` → `en`, since it has no detection at all. Use Sarvam or
+Deepgram `multi` for a caller who switches language mid-sentence.
+
+**The code standards are not interchangeable.** ElevenLabs is the one that bites: it takes
+ISO 639-3 only, and a BCP-47 code does not degrade — Scribe closes the socket with
+`1008 invalid_request` on the first utterance and the call transcribes nothing.
 
 TTS — the synthesis model is fixed per provider **except ElevenLabs**, which takes a `model`
 key (`eleven_v3` default, `eleven_multilingual_v2`, `eleven_turbo_v2_5`, `eleven_flash_v2_5`):
