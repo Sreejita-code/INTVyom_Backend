@@ -25,14 +25,26 @@ info:
     ## Assistant Runtime Modes
     `assistant_mode` selects the session shape. It is `pipeline` by default.
     - `pipeline` (half-cascade): a realtime model emits text, an external TTS provider speaks it.
-      Vendor `openai` (default) or `gemini`. Requires `assistant_tts_model` + `assistant_tts_config`.
+      Vendor is `openai` only — `gemini` is rejected with `400` (see below). Requires
+      `assistant_tts_model` + `assistant_tts_config`.
     - `realtime`: one model does STT + LLM + TTS and speaks its own audio. Requires
       `assistant_llm_config` (defaults: `provider=gemini`, `model=gemini-3.1-flash-live-preview`,
-      `voice=Puck`). TTS/STT fields are ignored.
+      `voice=Puck`); `provider=openai` is also supported. TTS/STT fields are ignored.
     - `cascade` (true STT → LLM → TTS pipeline): separate plugin STT, a plain OpenAI chat model,
-      and a plugin TTS — each stage separately metered. LLM provider must be `openai`
-      (model free-form, default `gpt-4.1`); `assistant_stt_model` must be `sarvam` or `cartesia`
-      (`native` is rejected); TTS model+config pair required.
+      and a plugin TTS — each stage separately metered, and the only mode that reports STT cost
+      on its own. LLM provider must be `openai`; `assistant_stt_model` is one of five plugin
+      providers (`native` is rejected); TTS model+config pair required.
+
+    ### Gemini is realtime-only
+    `assistant_llm_config.provider: "gemini"` in `pipeline` mode returns `400`. Pipeline is a
+    half-cascade: the realtime model must run in a text-only response modality so an external TTS
+    can speak the result, and Google's Live API does not support that on its native-audio models.
+    Use `assistant_mode: "realtime"` for Gemini, or `provider: "openai"` for pipeline.
+
+    Switching a **stored** Gemini assistant to `pipeline` or `cascade` also returns `400` unless
+    the same request carries `assistant_llm_config` with `provider: "openai"` and a model from
+    that mode's family. Requests that touch neither the mode nor the LLM (a rename, a prompt
+    edit) still work on such an assistant, so it can always be repaired.
 
     ## Models & Providers
     Live reference for model IDs, defaults, and per-mode validity.
@@ -40,40 +52,75 @@ info:
     ### Realtime LLM (`pipeline` and `realtime`)
     | Field | Values | Default |
     | :--- | :--- | :--- |
-    | `provider` | `gemini`, `openai` | `gemini` in realtime, `openai` in pipeline |
-    | `model` | any provider model string | `gemini-3.1-flash-live-preview` (gemini), `gpt-realtime-1.5` (openai) |
+    | `provider` | `openai` only in pipeline; `gemini` or `openai` in realtime | `gemini` in realtime, `openai` in pipeline |
+    | `model` | OpenAI: validated against the realtime list below. Gemini: any Live model string (not validated) | `gemini-3.1-flash-live-preview` (gemini), `gpt-realtime-1.5` (openai) |
     | `voice` | provider voice name | `Puck` (gemini), `marin` (openai). Honored only in `realtime` — ignored in `pipeline` |
-    | `api_key` | string | falls back to system `GOOGLE_API_KEY` / `OPENAI_API_KEY` |
+    | `api_key` | string | resolved from the Integrations module |
+
+    OpenAI realtime model IDs (`pipeline`, and `realtime` + openai): `gpt-realtime`,
+    `gpt-realtime-1.5`, `gpt-realtime-mini`, `gpt-4o-realtime-preview`,
+    `gpt-4o-mini-realtime-preview`. Anything else is a `400` — a plain chat model such as
+    `gpt-4.1` belongs to cascade mode. Gemini Live IDs are deliberately free-form.
 
     ### Cascade LLM (`cascade` only)
-    `provider` must be `openai` (any other value is rejected). `model` is free-form
-    (default `gpt-4.1`); an unknown name fails at the first API call, not at assistant creation.
-    Known-good models: `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`,
-    `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`,
-    `gpt-5.4-nano`, `gpt-5.5`, `chatgpt-4o-latest`.
+    `provider` must be `openai` (any other value is rejected). `model` is validated against a
+    **fixed allowlist** — an unknown name is a `400` at create/update, not a failure on the first
+    call. Default `gpt-4.1`.
+
+    `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`,
+    `gpt-5-nano`, `gpt-5.1`, `gpt-5.1-chat-latest`, `gpt-5.2`, `gpt-5.2-chat-latest`,
+    `gpt-5.3-chat-latest`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`,
+    `gpt-5.6-terra`, `gpt-5.6-luna`, `chat-latest`, `gpt-oss-120b`.
+
+    Cascade also unlocks seven generation knobs on `assistant_llm_config` — `temperature`,
+    `max_output_tokens`, `reasoning_effort`, `service_tier`, `verbosity`, `tool_choice`,
+    `parallel_tool_calls`. They are accepted (and stored) in every mode but only read in
+    `cascade`. **Reasoning models** (`gpt-5`, `gpt-5.x`) ignore `temperature` — send
+    `reasoning_effort` instead; non-reasoning models are the reverse.
 
     ### STT (`assistant_stt_model` + `assistant_stt_config`)
     | Provider | Valid in | Model default | Other config |
     | :--- | :--- | :--- | :--- |
-    | `sarvam` | `pipeline` (default), `cascade` | `saaras:v3` (also `saaras:v2.5`, `saarika:v2.5`) | `language` default `unknown` (auto-detect); `mode` default `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`; only honored in `cascade`) |
-    | `cartesia` | `cascade` only | `ink-whisper` (43 languages) or `ink-2` (English only) | fixed `language`, no auto-detect |
+    | `sarvam` | `pipeline` (default), `cascade` | `saaras:v3` (also `saaras:v2.5`, `saarika:v2.5`) | `language` default `unknown` (auto-detect); `mode` default `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`) |
+    | `cartesia` | `cascade` | `ink-whisper` (43 languages) or `ink-2` (English only) | fixed `language`, no auto-detect |
+    | `deepgram` | `cascade` | `nova-3` (multilingual, 45 languages); also `nova-2`, `flux-general-en`, `flux-general-multi` | `language` (BCP-47 or `multi`), `enable_diarization`, `keyterm` |
+    | `elevenlabs` | `cascade` | `scribe_v2_realtime` (auto-detects ~190 languages); also `scribe_v2`, `scribe_v1` | `language_code`, `no_verbatim` |
+    | `openai` | `cascade` | `gpt-4o-mini-transcribe`; also `gpt-4o-transcribe`, `whisper-1` | `language`, `detect_language`, `prompt`, `noise_reduction_type`, `use_realtime` |
     | `native` | `pipeline` only — rejected in `cascade` | n/a (the realtime LLM transcribes itself) | no config |
 
-    Ignored entirely in `realtime` mode. Sarvam's `codemix` + `language=unknown` is the
-    multilingual combination; 24 codes: `as`, `bn`, `brx`, `doi`, `en`, `gu`, `hi`, `kn`, `kok`,
-    `ks`, `mai`, `ml`, `mni`, `mr`, `ne`, `od`, `pa`, `sa`, `sat`, `sd`, `ta`, `te`, `ur`
-    (all `-IN`) plus `unknown`.
+    The four plugin providers are **accepted in `pipeline` mode too**: the selection is stored,
+    and the platform degrades that call to native transcription, so switching the assistant to
+    `cascade` later needs no second edit. Ignored entirely in `realtime` mode.
+
+    **Auto-detect is not uniform — this is the trap.** With `language` omitted: `sarvam`
+    (`unknown`) and `elevenlabs` auto-detect, but `deepgram` and `openai` fall back to
+    `preferred_languages[0]` and then to **`en`**, and `cartesia` never auto-detects at all. For a
+    multilingual caller set `deepgram` `language: "multi"` or `openai` `detect_language: true`
+    explicitly. A pinned ElevenLabs `language_code` **disables** its auto-detect.
+
+    Sarvam's `codemix` + `language=unknown` is the multilingual combination; 24 codes: `as`, `bn`,
+    `brx`, `doi`, `en`, `gu`, `hi`, `kn`, `kok`, `ks`, `mai`, `ml`, `mni`, `mr`, `ne`, `od`, `pa`,
+    `sa`, `sat`, `sd`, `ta`, `te`, `ur` (all `-IN`) plus `unknown`.
 
     ### TTS (`assistant_tts_model` + `assistant_tts_config`)
-    The synthesis model is fixed per provider — `assistant_tts_config` has no `model` key.
-    | Provider | Model (fixed) | Required config |
-    | :--- | :--- | :--- |
-    | `cartesia` | `sonic-3` | `voice_id` |
-    | `sarvam` | `bulbul:v3` | `speaker` (+ optional `target_language_code`) |
-    | `elevenlabs` | `eleven_v3` | `voice_id` |
-    | `mistral` | `voxtral-mini-tts-2603` | `voice_id` |
+    The synthesis model is fixed per provider **except ElevenLabs**, which takes a `model` key.
+    | Provider | Model | Required config | Synthesis params |
+    | :--- | :--- | :--- | :--- |
+    | `cartesia` | `sonic-3` (fixed) | `voice_id` | `language`, `speed` (0–3), `volume` (0–3), `emotion`, `pronunciation_dict_id` |
+    | `sarvam` | `bulbul:v3` (fixed) | `speaker` | `target_language_code`, `pace` (0.3–3.0), `speech_sample_rate`, `temperature` (0.01–2.0) |
+    | `elevenlabs` | `eleven_v3` (default) | `voice_id` | `model`, `voice_settings` |
+    | `mistral` | `voxtral-mini-tts-2603` (fixed) | `voice_id` | — |
 
     All four accept an optional `api_key`; keys are always resolved from the Integrations module.
+
+    ### Provider API keys
+    Every provider slot resolves its key from the Integrations module (`POST /api/integration/`),
+    never from a key sent in the payload. Register `service_name` as: `openai`, `gemini`,
+    `sarvam`, `cartesia`, `deepgram`, `elevenlabs`, `mistral`.
+
+    One vendor key covers every slot it backs, and rotating it re-syncs all of them:
+    `sarvam` and `cartesia` back STT **and** TTS, `elevenlabs` backs STT **and** TTS, and
+    `openai` backs the LLM **and** the cascade STT stage. `native` needs no key at all.
 
     ## End-Call Webhook Payload
     When `assistant_end_call_url` (AI calls) or `passthrough_webhook_url` (passthrough calls) is
@@ -387,10 +434,13 @@ paths:
                 assistant_stt_model:
                   type: string
                   description: >
-                    User-transcription source. `native` is pipeline-only, `cartesia` is
-                    cascade-only, `sarvam` is supported in both modes. `realtime` ignores
-                    STT fields because the model transcribes directly.
-                  enum: [sarvam, native, cartesia]
+                    User-transcription source. `native` (the realtime LLM transcribes itself)
+                    is pipeline-only and rejected in cascade. The four plugin providers
+                    (`cartesia`, `deepgram`, `elevenlabs`, `openai`) run for real in cascade;
+                    in pipeline they are stored but that call falls back to native
+                    transcription. `sarvam` runs in both. `realtime` ignores STT fields
+                    because the model transcribes directly.
+                  enum: [sarvam, native, cartesia, deepgram, elevenlabs, openai]
                   default: sarvam
                 assistant_stt_config:
                   $ref: '#/components/schemas/AssistantSttConfig'
@@ -468,6 +518,37 @@ paths:
             type: integer
             default: 100
             maximum: 100
+          description: >
+            Page size. Defaults to 100 here — deliberately higher than the external API's
+            own default of 10, because existing clients expect the full list in one call.
+        - name: assistant_name
+          in: query
+          schema:
+            type: string
+          description: Case-insensitive partial name filter.
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: ISO-8601 lower bound on assistant creation time.
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: ISO-8601 upper bound on assistant creation time.
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            default: assistant_created_at
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
       responses:
         '200':
           description: Assistant list retrieved
@@ -590,10 +671,13 @@ paths:
                   $ref: '#/components/schemas/AssistantTtsConfig'
                 assistant_stt_model:
                   type: string
-                  enum: [sarvam, native, cartesia]
+                  enum: [sarvam, native, cartesia, deepgram, elevenlabs, openai]
                   description: >
-                    `native` is pipeline-only; `cartesia` is cascade-only; `sarvam` is valid in
-                    both modes. Sending the model alone resets that provider's config to defaults.
+                    `native` is pipeline-only and rejected in cascade; `sarvam` is valid in
+                    both; `cartesia`, `deepgram`, `elevenlabs` and `openai` run in cascade and
+                    are stored-but-inert in pipeline. Sending the model alone resets that
+                    provider's config to defaults. Switching an assistant to cascade while it
+                    still holds `native` is a 400 — send the new STT model in the same request.
                 assistant_stt_config:
                   $ref: '#/components/schemas/AssistantSttConfig'
                 assistant_start_instruction:
@@ -852,7 +936,17 @@ paths:
     get:
       tags: [Assistant]
       summary: Get platform-wise billable minutes
-      description: Calculates billable minutes grouped by platform phone number.
+      description: >-
+        Calculates billable minutes grouped by platform phone number.
+
+        There is no upstream aggregate for this — it is computed here by reading every call log for
+        every assistant you own, so it is the slowest endpoint in the API and its cost grows with
+        your history. Always send `start_date` and `end_date`; omitting them evaluates your whole
+        lifetime.
+
+        A per-assistant read failure is skipped rather than failing the request, so check
+        `data.assistants_skipped` before treating the totals as complete — a non-zero value means
+        the numbers are lower than reality, and `message` says so too.
       parameters:
         - name: user_id
           in: query
@@ -902,6 +996,16 @@ paths:
                             type: string
                           end_date:
                             type: string
+                      assistants_evaluated:
+                        type: integer
+                        description: How many assistants were included in this total.
+                        example: 12
+                      assistants_skipped:
+                        type: integer
+                        description: >-
+                          How many assistants could not be read and were left out. Anything above 0
+                          means the totals are incomplete.
+                        example: 0
         '500':
           description: Server error
           content:
@@ -1104,7 +1208,14 @@ paths:
     delete:
       tags: [SIP]
       summary: Delete a SIP trunk
-      description: Deletes a SIP trunk from the local database.
+      description: >
+        Deactivates the trunk on the external API (`DELETE /sip/deactivate/{trunk_id}`, a
+        soft delete that preserves the record for audit) and then removes the local mirror.
+
+        If the external trunk is already gone (404) or already deactivated (400), the local
+        row is still removed and `external_deactivated` comes back `false` — otherwise a
+        half-finished delete would strand it locally forever. Any other upstream failure
+        aborts before the local delete, so the two sides never drift apart.
       parameters:
         - name: id
           in: path
@@ -1139,7 +1250,12 @@ paths:
                     example: true
                   message:
                     type: string
-                    example: "SIP trunk deleted successfully from local database"
+                    example: "SIP trunk deactivated externally and removed locally"
+                  external_deactivated:
+                    type: boolean
+                    description: >
+                      `false` when the external trunk was already inactive or already gone.
+                    example: true
                   data:
                     type: object
                     properties:
@@ -1202,6 +1318,85 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/call/queue/{queue_id}:
+    get:
+      tags: [Call]
+      summary: Get outbound queue status
+      description: >
+        Dispatch state of a queued outbound call. `POST /api/call/outbound` and
+        `POST /api/passthrough-call/passthrough-outbound` both return a `queue_id`; this is
+        how you resolve it.
+
+        `dispatched` means only that the handoff to the telephony provider succeeded — the
+        live call outcome (`answered`, `busy`, `no_answer`, ...) arrives through the end-call
+        webhook or the assistant call logs, not here.
+      parameters:
+        - name: queue_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The queue_id returned when the call was triggered.
+          example: "8b7df5ea0fdc497ea4f44bd31954a387"
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Queue status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      queue_id:
+                        type: string
+                      status:
+                        type: string
+                        enum: [pending, dispatching, dispatched, failed]
+                        description: >
+                          `pending` waiting for the dispatcher; `dispatching` creating the
+                          room/provider call; `dispatched` handed off successfully;
+                          `failed` permanently failed after retries.
+                      to_number:
+                        type: string
+                      call_service:
+                        type: string
+                        enum: [twilio, exotel]
+                      queued_at:
+                        type: string
+                        format: date-time
+                      dispatched_at:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      retry_count:
+                        type: integer
+                      last_error:
+                        type: string
+                        nullable: true
+        '400':
+          description: Missing user_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Queue item not found for this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   # ==================== INTEGRATION ====================
   /api/integration/store:
     post:
@@ -1229,11 +1424,15 @@ paths:
                     recommended usage — the server's provider map is the source of truth.
                 service_name:
                   type: string
-                  enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
+                  enum: [sarvam, cartesia, deepgram, elevenlabs, mistral, openai, gemini]
                   example: "sarvam"
                   description: >
-                    Which provider this key belongs to. One row per provider: Sarvam issues a
-                    single key serving both TTS and STT, so the `sarvam` row covers both slots.
+                    Which provider this key belongs to. One row per provider, and one row can
+                    serve several slots: `sarvam`, `cartesia` and `elevenlabs` each issue a
+                    single key covering TTS **and** STT, and `openai` covers the LLM **and**
+                    the cascade STT stage. Storing it once is enough, and rotating it re-syncs
+                    every slot it backs. `deepgram` is STT-only and is required before an
+                    assistant can select `assistant_stt_model: deepgram`.
                     An unrecognised name is rejected with `400`.
                 api_key:
                   type: string
@@ -1301,7 +1500,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
+            enum: [sarvam, cartesia, deepgram, elevenlabs, mistral, openai, gemini]
       responses:
         '200':
           description: API key retrieved
@@ -1351,7 +1550,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
+            enum: [sarvam, cartesia, deepgram, elevenlabs, mistral, openai, gemini]
       responses:
         '200':
           description: Re-sync status retrieved
@@ -1417,7 +1616,7 @@ paths:
                   example: "665f1a2b3c4d5e6f7a8b9c0d"
                 service_name:
                   type: string
-                  enum: [sarvam, cartesia, elevenlabs, mistral, openai, gemini]
+                  enum: [sarvam, cartesia, deepgram, elevenlabs, mistral, openai, gemini]
                   example: "sarvam"
       responses:
         '202':
@@ -1901,21 +2100,33 @@ paths:
     get:
       tags: [Passthrough Call]
       summary: Get passthrough call records
-      description: Retrieves call records filtered to passthrough-only calls.
+      description: >
+        Retrieves call records, filtered to passthrough-only calls by default. Set
+        `passthrough_only=false` to query across AI calls as well — every record carries
+        `is_passthrough` so the two are always distinguishable in a mixed result.
       parameters:
         - name: user_id
           in: query
           required: true
           schema:
             type: string
+        - name: passthrough_only
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: >
+            Defaults to `true` on this endpoint. Send `false` to include AI-agent calls.
         - name: to_number
           in: query
           schema:
             type: string
+          description: Destination number in E.164 format.
         - name: call_status
           in: query
           schema:
             type: string
+            enum: [completed, failed, busy, no_answer, timeout]
         - name: start_date
           in: query
           schema:
@@ -1930,10 +2141,30 @@ paths:
           in: query
           schema:
             type: integer
-        - name: offset
+            default: 10
+            minimum: 1
+            maximum: 100
+        - name: page
           in: query
           schema:
             type: integer
+            default: 1
+            minimum: 1
+          description: >
+            1-based page number. Replaces the former `offset` parameter, which the external
+            API does not read — sending it returned page 1 every time.
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [started_at, ended_at, call_duration_minutes]
+            default: started_at
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
       responses:
         '200':
           description: Call records retrieved
@@ -3086,28 +3317,38 @@ components:
     AssistantLlmConfig:
       type: object
       description: >
-        LLM vendor config. Optional in pipeline mode (defaults to `openai`; only `api_key`
-        affects runtime behavior there) and required when switching into realtime. When
-        `api_key` is omitted, the key is resolved from the Integrations module; in pipeline
-        mode a missing integration is not an error — the external API's system key is used.
-        In `cascade` mode `provider` must be `openai` and `model` is a free-form OpenAI chat
-        model (default `gpt-4.1`); `voice` is ignored.
+        LLM vendor config. Optional in pipeline mode (defaults to `openai`; only `api_key` and
+        `model` affect runtime behavior there) and required when switching into realtime. Any
+        `api_key` sent here is replaced with the key stored in the Integrations module; in
+        pipeline mode a missing integration is not an error — the external API's system key is
+        used. In `cascade` mode `provider` must be `openai`, `model` is checked against the
+        cascade allowlist, and `voice` is ignored.
+
+        The seven generation knobs (`temperature` through `parallel_tool_calls`) are accepted
+        and stored in every mode but only READ in `cascade` — they are `openai.responses.LLM`
+        parameters, and pipeline/realtime talk to the Realtime API instead.
       properties:
         provider:
           type: string
           enum: [openai, gemini]
           description: >
-            `gemini` or `openai` in pipeline/realtime; `openai` only in cascade — any other
-            value is rejected there.
+            `openai` or `gemini` in realtime; `openai` ONLY in pipeline and cascade. `gemini`
+            in pipeline mode is rejected with 400 — Google's Live API cannot run the text-only
+            modality a half-cascade needs. Use `assistant_mode: realtime` for Gemini.
           example: "gemini"
         model:
           type: string
           description: >
-            Realtime defaults: Gemini `gemini-3.1-flash-live-preview`, OpenAI `gpt-realtime-1.5`.
-            Cascade defaults to `gpt-4.1` and is free-form — any OpenAI chat model works.
-            Known-good cascade models: `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`,
-            `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`,
-            `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `chatgpt-4o-latest`.
+            Validated per mode against a different list, because each mode talks to a different
+            API. Pipeline and realtime+openai: `gpt-realtime`, `gpt-realtime-1.5`,
+            `gpt-realtime-mini`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`
+            (default `gpt-realtime-1.5`). Realtime+gemini: any Live model string, unvalidated
+            (default `gemini-3.1-flash-live-preview`). Cascade (default `gpt-4.1`): `gpt-4.1`,
+            `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`,
+            `gpt-5-nano`, `gpt-5.1`, `gpt-5.1-chat-latest`, `gpt-5.2`, `gpt-5.2-chat-latest`,
+            `gpt-5.3-chat-latest`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
+            `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `chat-latest`, `gpt-oss-120b`.
+            The two sets are disjoint — sending one family's ID in the other's mode is a 400.
         voice:
           type: string
           description: >
@@ -3115,15 +3356,60 @@ components:
             Gemini default `Puck`, OpenAI default `marin`.
         api_key:
           type: string
+          description: Ignored — the key always comes from the Integrations module.
           example: "sk-..."
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          description: >
+            Cascade only. Sampling temperature, 0-2 (SDK default 0.8). Higher = more random.
+            IGNORED by reasoning models (`gpt-5`, `gpt-5.x`) — send `reasoning_effort` there.
+          example: 0.7
+        max_output_tokens:
+          type: integer
+          minimum: 1
+          description: Cascade only. Cap on output tokens per response. Unset = model default.
+          example: 500
+        reasoning_effort:
+          type: string
+          enum: [none, minimal, low, medium, high, xhigh, max]
+          description: >
+            Cascade only, and only on REASONING models (`gpt-5`, `gpt-5.x`). How much the model
+            thinks before answering. Higher = slower and dearer; on a voice call that is
+            audible latency, so prefer `low`/`minimal` unless the task needs the depth.
+          example: "low"
+        service_tier:
+          type: string
+          enum: [auto, default, flex, scale, priority]
+          description: Cascade only. OpenAI processing/billing tier. Unset = OpenAI's default.
+        verbosity:
+          type: string
+          enum: [low, medium, high]
+          description: >
+            Cascade only. Constrains response length. `low` suits voice calls, where a long
+            reply is a long wait.
+        tool_choice:
+          type: string
+          enum: [auto, required, none]
+          description: >
+            Cascade only. Whether the model may call the assistant's attached tools.
+            `none` disables them for this assistant without detaching them.
+        parallel_tool_calls:
+          type: boolean
+          description: Cascade only. Allow more than one tool call in a single response.
 
     AssistantTtsConfig:
       type: object
       description: >
         TTS config for the selected `assistant_tts_model`. Any `api_key` sent here is ignored —
         the key always comes from the Integrations module. Send the fields for your provider:
-        sarvam -> `speaker` (required) + `target_language_code`; cartesia / elevenlabs /
-        mistral -> `voice_id` (required).
+        sarvam -> `speaker` (required); cartesia / elevenlabs / mistral -> `voice_id`
+        (required). Every block is STRICT — an unrecognised key is rejected with 422 rather
+        than silently dropped, so a typo like `speaking_rate` fails at create time.
+
+        Speaking speed is per-provider and NOT interchangeable: cartesia `speed`, sarvam
+        `pace`, elevenlabs `voice_settings.speed`. Mistral exposes no rate knob.
       properties:
         speaker:
           type: string
@@ -3132,34 +3418,141 @@ components:
         target_language_code:
           type: string
           description: >
-            Sarvam only. A SINGLE BCP-47 string, not a list. Default `bn-IN`. For a
+            Sarvam only. A SINGLE BCP-47 string, not a list. Omit and the platform substitutes
+            `en-IN`. NOTE: assistants created before this default was corrected have `bn-IN`
+            written into their stored config — send the field explicitly to fix them. For a
             multilingual agent set `assistant_interaction_config.preferred_languages` instead.
           example: "hi-IN"
+        pace:
+          type: number
+          minimum: 0.3
+          maximum: 3.0
+          default: 1.0
+          description: Sarvam only. Speaking pace multiplier; >1.0 faster, <1.0 slower.
+          example: 1.1
+        speech_sample_rate:
+          type: number
+          enum: [8000, 16000, 22050, 24000, 32000, 44100, 48000]
+          default: 24000
+          description: >
+            Sarvam only. Output sample rate in Hz — any other value is rejected. Use `8000`
+            only for narrowband telephony.
+        temperature:
+          type: number
+          minimum: 0.01
+          maximum: 2.0
+          default: 0.3
+          description: Sarvam only. TTS sampling temperature. Lower = more stable delivery.
         voice_id:
           type: string
           description: Cartesia / ElevenLabs / Mistral, required.
           example: "a167e0f3-df7e-4277-976b-be2f952fa275"
+        language:
+          type: string
+          default: "en"
+          description: >
+            Cartesia only. BCP-47 code for the input text; affects pronunciation only.
+          example: "en"
+        speed:
+          type: number
+          minimum: 0
+          maximum: 3
+          default: 1.0
+          description: >
+            Cartesia only. Numeric multiplier of normal speed (1.5 = 50% faster). The preset
+            strings `slow`/`normal`/`fast` are NOT accepted — `sonic-3` requires a float.
+          example: 1.1
+        volume:
+          type: number
+          minimum: 0
+          maximum: 3
+          default: 1.0
+          description: Cartesia only. Output volume, where 1.0 is the default level.
+        emotion:
+          type: string
+          description: >
+            Cartesia only, Sonic 3 only. Emotion control string, e.g. `excited`, `calm`, `sad`.
+          example: "calm"
+        pronunciation_dict_id:
+          type: string
+          description: >
+            Cartesia only, Sonic 3 models only. ID of a Cartesia pronunciation dictionary to
+            apply — the way to fix how the agent says names, SKUs and domain jargon.
+        model:
+          type: string
+          enum: [eleven_v3, eleven_multilingual_v2, eleven_turbo_v2_5, eleven_flash_v2_5]
+          default: eleven_v3
+          description: >
+            ElevenLabs only — the one provider whose synthesis model is selectable. The other
+            three are fixed (cartesia `sonic-3`, sarvam `bulbul:v3`, mistral
+            `voxtral-mini-tts-2603`) and reject a `model` key.
+        voice_settings:
+          type: object
+          description: >
+            ElevenLabs only. Voice tuning. Strict, like its parent — an unknown key here is a
+            422 too.
+          properties:
+            stability:
+              type: number
+              minimum: 0
+              maximum: 1
+            similarity_boost:
+              type: number
+              minimum: 0
+              maximum: 1
+            style:
+              type: number
+              minimum: 0
+              maximum: 1
+            speed:
+              type: number
+              minimum: 0.25
+              maximum: 4.0
+              description: ElevenLabs speaking rate. Not the same key as cartesia `speed`.
+            use_speaker_boost:
+              type: boolean
 
     AssistantSttConfig:
       type: object
       description: >
         STT config for the selected `assistant_stt_model` (requires it — a config on its own is
-        rejected). Any `api_key` sent here is overwritten; the key comes from the Integrations
-        module. `native` takes no fields. Sarvam config: `model` (default `saaras:v3`),
-        `language` (default `unknown` = auto-detect), `mode` (default `codemix`; only honored
-        in `cascade`). Cartesia config (`cascade` only): `model` (`ink-whisper` — 43 languages —
-        or `ink-2` — English only) and a fixed `language` (default `en`; no auto-detect).
+        rejected). Omit it entirely and the provider's defaults are used. Any `api_key` sent
+        here is overwritten; the key comes from the Integrations module, and for `deepgram`
+        that means a `deepgram` integration must exist first. `native` takes no fields.
+        The block is STRICT — an unknown key (a typo like `enable_diarisation`) is a 422.
+
+        Five providers are valid in `cascade`: `sarvam`, `cartesia`, `deepgram`, `elevenlabs`,
+        `openai`. In `pipeline` mode `sarvam` and `native` run for real; the other four are
+        accepted and stored, but that call transcribes natively — the selection takes effect
+        when the assistant moves to `cascade`. Ignored entirely in `realtime`.
+
+        LANGUAGE DEFAULTS ARE NOT UNIFORM. Omitting the language field auto-detects on
+        `sarvam` and `elevenlabs`, but falls back to `preferred_languages[0]` then plain `en`
+        on `deepgram` and `openai`, and `cartesia` cannot auto-detect at all. For a caller who
+        may switch languages, set `deepgram` `language: multi` or `openai`
+        `detect_language: true` explicitly — do not rely on the omission.
       properties:
         model:
           type: string
           description: >
-            Sarvam: `saaras:v3` (default), `saaras:v2.5`, `saarika:v2.5`. Cartesia: `ink-whisper`
-            (default) or `ink-2`.
+            Per provider. Sarvam: `saaras:v3` (default), `saaras:v2.5`, `saarika:v2.5`.
+            Cartesia: `ink-whisper` (default, 43 languages) or `ink-2` (English only).
+            Deepgram: `nova-3` (default, multilingual/45 languages), `nova-2`,
+            `flux-general-en` (English only), `flux-general-multi`.
+            ElevenLabs: `scribe_v2_realtime` (default, auto-detects ~190 languages),
+            `scribe_v2`, `scribe_v1`.
+            OpenAI: `gpt-4o-mini-transcribe` (default, fast and cheap), `gpt-4o-transcribe`
+            (more accurate), `whisper-1` (legacy batch model — the only one that reads
+            `prompt`). `gpt-realtime-whisper` is REJECTED: it has no server-side endpointing.
         language:
           type: string
           description: >
-            A SINGLE BCP-47 string, not a list. Sarvam: `unknown` (default) auto-detects.
-            Cartesia: fixed code, no auto-detect.
+            Sarvam / Cartesia / Deepgram / OpenAI. A SINGLE BCP-47 string, not a list — the
+            list field is `assistant_interaction_config.preferred_languages`.
+            Sarvam: `unknown` (default) auto-detects. Cartesia: a fixed code, no auto-detect.
+            Deepgram: a fixed code, or `multi` to auto-detect per segment (billed at a higher
+            per-minute rate than monolingual). OpenAI: an ISO-639-1 code; omitting does NOT
+            auto-detect, and it is ignored when `detect_language` is true.
           example: "hi-IN"
         mode:
           type: string
@@ -3168,8 +3561,66 @@ components:
           description: >
             Sarvam only, `saaras:v3` only. `codemix` (default) keeps code-switching intact
             within an utterance; `transcribe` plain; `translate` returns English; `verbatim`
-            keeps fillers/repetitions; `translit` romanises Indic script. Only honored in
-            `cascade` mode — the pipeline parallel tap hardcodes `codemix`.
+            keeps fillers/repetitions; `translit` romanises Indic script. Honored in both
+            `pipeline` and `cascade`.
+        enable_diarization:
+          type: boolean
+          default: false
+          description: >
+            Deepgram only, and only on the `nova` models — pairing it with a `flux` model logs
+            a warning and drops it. Labels each utterance with a speaker id. Omitted stays
+            off; it is never force-enabled.
+        keyterm:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: >
+            Deepgram only, `nova-3` and `flux` only — `nova-2` uses a different keyword
+            mechanism and silently ignores this. Biases recognition toward a term (product
+            names, jargon). Omitted = not sent, no biasing.
+          example: "invoice"
+        language_code:
+          type: string
+          description: >
+            ElevenLabs only (its spelling of `language`). SETTING IT DISABLES AUTO-DETECT and
+            pins the language, so a caller who switches mid-call is mis-transcribed. Omit it —
+            and leave `preferred_languages` empty — to auto-detect ~190 languages.
+          example: "hi-IN"
+        no_verbatim:
+          type: boolean
+          default: false
+          description: >
+            ElevenLabs only. Strips filler words (`um`, `uh`) and false starts from the
+            transcript. Omitted keeps them.
+        detect_language:
+          type: boolean
+          default: false
+          description: >
+            OpenAI only. Auto-detects the spoken language and OVERRIDES `language` (setting
+            both is not an error — `language` is simply dropped). This is the only way to get
+            auto-detect out of OpenAI STT; there is no "auto" language code.
+        prompt:
+          type: string
+          description: >
+            OpenAI only, `whisper-1` ONLY. Biases spellings and jargon (names, product terms).
+            The `gpt-4o-transcribe` family accepts and ignores it — no error, no biasing.
+          example: "Vyom, LiveKit, Exotel, SIP trunk, Sarvam"
+        noise_reduction_type:
+          type: string
+          enum: [near_field, far_field]
+          description: >
+            OpenAI only. Server-side noise reduction: `near_field` for a headset, `far_field`
+            for speakerphone or a room mic. Omitted applies none.
+        use_realtime:
+          type: boolean
+          default: true
+          description: >
+            OpenAI only. `true` streams over OpenAI's realtime transcription WebSocket (interim
+            results, low latency). `false` uses the batch REST API — cheaper, but it holds each
+            utterance until it ends, adding a full turn of latency. This default INVERTS the
+            plugin's own, because a live phone call needs the interim results.
 
     SipTrunk:
       type: object

@@ -1,6 +1,11 @@
 # AGENTS.md
 
-Guidelines for AI agents working in this repository.
+Code conventions for AI agents working in this repository.
+
+**Read [CLAUDE.md](CLAUDE.md) first.** It defines the working process — orient against the
+upstream API docs, ask only what changes the work, show a plan before implementing, track the
+steps, verify as you go, protect existing users, ship docs with the code. This file covers only
+what the resulting code must look like.
 
 ## Mandatory skills
 

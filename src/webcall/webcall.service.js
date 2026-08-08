@@ -16,7 +16,9 @@ const generateWebCallToken = async (data) => {
   // 2. Resolve Assistant ID
   const assistant = await findByLocalOrExternalId(Assistant, assistant_id, user._id, 'external_assistant_id');
   if (!assistant) {
-    throw new Error('Assistant not found for this user');
+    const error = new Error('Assistant not found for this user');
+    error.status = 404;
+    throw error;
   }
 
   // 3. Construct External Payload

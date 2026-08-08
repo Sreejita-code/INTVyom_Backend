@@ -33,9 +33,16 @@ const buildPipelineSttConfig = async ({ userId, sttModel, sttConfig }) => {
 };
 
 // Provider resolution is mode-aware:
-// - realtime defaults to gemini
-// - pipeline defaults to openai
+// - realtime accepts gemini (default) or openai
+// - pipeline is openai-only: pipeline is a half-cascade, which needs the realtime model in a
+//   text-only response modality, and Google's Live API cannot do that on its native-audio models
 // - cascade only allows openai
+//
+// The gemini/pipeline and non-openai/cascade rejections fire only when the caller is actively
+// choosing the combination — an explicit provider, or an explicit mode. A PATCH that touches
+// neither (a rename on an assistant stored with the retired gemini/pipeline pairing) resolves the
+// stored provider and passes through: that request does not forward assistant_llm_config at all,
+// so failing it would lock the user out of editing the assistant instead of helping them fix it.
 const resolveProvider = ({ llmConfig, existing, mode, modeExplicit = false }) => {
   const defaultByMode = mode === 'realtime' ? 'gemini' : 'openai';
   const explicitProvider = llmConfig?.provider;
@@ -50,8 +57,16 @@ const resolveProvider = ({ llmConfig, existing, mode, modeExplicit = false }) =>
   }
 
   const provider = raw ? String(raw).toLowerCase() : defaultByMode;
-  if (mode === 'cascade' && provider !== 'openai') {
+  const callerChoseIt = explicitProvider !== undefined || modeExplicit;
+
+  if (mode === 'cascade' && provider !== 'openai' && callerChoseIt) {
     throw badRequest("assistant_llm_config.provider must be 'openai' in cascade mode");
+  }
+  if (mode === 'pipeline' && provider === 'gemini' && callerChoseIt) {
+    throw badRequest(
+      "assistant_llm_config.provider 'gemini' is not supported in pipeline mode — " +
+      "use assistant_mode 'realtime' for Gemini, or provider 'openai' for pipeline"
+    );
   }
   if (!keyNameFor('llm', provider)) {
     const allowed = modelsFor('llm').map((p) => `'${p}'`).join(' or ');

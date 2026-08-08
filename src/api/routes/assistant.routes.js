@@ -19,15 +19,24 @@ router.post('/create', asyncHandler(async (req, res) => {
 }));
 
 router.get('/list', asyncHandler(async (req, res) => {
-  const { user_id, page, limit } = req.query;
+  const { user_id, page, limit, assistant_name, start_date, end_date, sort_by, sort_order } = req.query;
 
   if (!user_id) throw httpError(400, 'user_id query parameter is required');
 
   const queryParams = {};
   if (page) queryParams.page = parseInt(page, 10);
 
-  // FIX: Set a safe maximum limit of 100 instead of 1000 to prevent API crashes
+  // FIX: Set a safe maximum limit of 100 instead of 1000 to prevent API crashes.
+  // This deliberately overrides upstream's default of 10 — existing clients rely on getting
+  // the whole list back in one request, so the default is not lowered to match.
   queryParams.limit = limit ? parseInt(limit, 10) : 100;
+
+  // Upstream filter/sort params, forwarded only when sent so its own defaults still apply.
+  if (assistant_name) queryParams.assistant_name = assistant_name;
+  if (start_date) queryParams.start_date = start_date;
+  if (end_date) queryParams.end_date = end_date;
+  if (sort_by) queryParams.sort_by = sort_by;
+  if (sort_order) queryParams.sort_order = sort_order;
 
   const result = await assistantService.listAssistants(user_id, queryParams);
   res.status(200).json(result);

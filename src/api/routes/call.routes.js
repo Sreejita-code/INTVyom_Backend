@@ -19,4 +19,15 @@ router.post('/outbound', asyncHandler(async (req, res) => {
   res.status(200).json(result);
 }));
 
+// Poll the dispatch state of the queue_id returned by POST /outbound.
+router.get('/queue/:queue_id', asyncHandler(async (req, res) => {
+  const { user_id } = req.query;
+  const { queue_id } = req.params;
+
+  if (!user_id) throw httpError(400, 'user_id query parameter is required');
+
+  const result = await callService.getQueueStatus(user_id, queue_id);
+  res.status(200).json(result);
+}));
+
 module.exports = router;

@@ -6,9 +6,18 @@ const Integration = require('../core/db/schemas/integration.model');
 // for X" reads it from here — assistant create, assistant update, and the post-rotation
 // re-sync all go through resolveApiKey()/classify() below.
 //
-// Sarvam issues one API key that serves both STT and TTS, so both kinds point at the same
-// `sarvam` row. That is also why classify('sarvam') reports two targets.
+// Several vendors issue one API key that serves more than one slot: Sarvam and Cartesia back
+// STT *and* TTS, ElevenLabs backs STT *and* TTS, and OpenAI backs STT *and* LLM. Each points at
+// the same row, which is why classify() reports two targets for those names.
+//
+// Key order matters: serviceTypeFor() reports a shared row under the FIRST kind that declares
+// it, so llm is listed before tts before stt. That keeps `openai` typed LLM and `elevenlabs`
+// typed TTS, as they were before the STT slot grew.
 const PROVIDER_KEYS = {
+  llm: {
+    openai: 'openai',
+    gemini: 'gemini',
+  },
   tts: {
     sarvam: 'sarvam',
     cartesia: 'cartesia',
@@ -18,12 +27,11 @@ const PROVIDER_KEYS = {
   stt: {
     sarvam: 'sarvam',
     cartesia: 'cartesia',
+    deepgram: 'deepgram',
+    elevenlabs: 'elevenlabs',
+    openai: 'openai',
     // ponytail: `native` deliberately absent — the external API supplies its own STT,
     // so no key is resolved and the caller's config is forwarded verbatim.
-  },
-  llm: {
-    openai: 'openai',
-    gemini: 'gemini',
   },
 };
 
@@ -109,6 +117,9 @@ if (require.main === module) {
   assert.strictEqual(keyNameFor('stt', 'sarvam'), 'sarvam');
   assert.strictEqual(keyNameFor('tts', 'Sarvam'), 'sarvam');
   assert.strictEqual(keyNameFor('llm', 'openai'), 'openai');
+  assert.strictEqual(keyNameFor('stt', 'deepgram'), 'deepgram');
+  assert.strictEqual(keyNameFor('stt', 'openai'), 'openai');
+  assert.strictEqual(keyNameFor('stt', 'elevenlabs'), 'elevenlabs');
   assert.strictEqual(keyNameFor('stt', 'native'), undefined);
   assert.strictEqual(keyNameFor('tts', undefined), undefined);
   assert.strictEqual(keyNameFor('tts', 'nonsense'), undefined);
@@ -119,22 +130,37 @@ if (require.main === module) {
     { kind: 'tts', model: 'sarvam' },
     { kind: 'stt', model: 'sarvam' },
   ]);
-  assert.deepStrictEqual(classify('openai'), [{ kind: 'llm', model: 'openai' }]);
+  // One OpenAI key now backs the LLM and the cascade STT stage; rotating it must reach both.
+  assert.deepStrictEqual(classify('openai'), [
+    { kind: 'llm', model: 'openai' },
+    { kind: 'stt', model: 'openai' },
+  ]);
   assert.deepStrictEqual(classify('CARTESIA'), [
     { kind: 'tts', model: 'cartesia' },
     { kind: 'stt', model: 'cartesia' },
   ]);
+  assert.deepStrictEqual(classify('elevenlabs'), [
+    { kind: 'tts', model: 'elevenlabs' },
+    { kind: 'stt', model: 'elevenlabs' },
+  ]);
+  assert.deepStrictEqual(classify('deepgram'), [{ kind: 'stt', model: 'deepgram' }]);
   assert.strictEqual(classify('nonsense'), undefined);
   assert.strictEqual(classify('sarvam_stt'), undefined); // retired: STT reads the shared row
 
+  // Shared rows keep the type they had before the STT slot grew — existing Integration
+  // documents were written with these values and must not be re-typed under users.
   assert.strictEqual(serviceTypeFor('openai'), 'LLM');
   assert.strictEqual(serviceTypeFor('sarvam'), 'TTS');
+  assert.strictEqual(serviceTypeFor('elevenlabs'), 'TTS');
+  assert.strictEqual(serviceTypeFor('deepgram'), 'STT');
   assert.strictEqual(serviceTypeFor('nonsense'), undefined);
 
   assert.deepStrictEqual(modelsFor('llm'), ['openai', 'gemini']);
-  assert.deepStrictEqual(modelsFor('stt'), ['sarvam', 'cartesia']);
+  assert.deepStrictEqual(modelsFor('stt'), [
+    'sarvam', 'cartesia', 'deepgram', 'elevenlabs', 'openai',
+  ]);
   assert.deepStrictEqual(SERVICE_NAMES, [
-    'cartesia', 'elevenlabs', 'gemini', 'mistral', 'openai', 'sarvam',
+    'cartesia', 'deepgram', 'elevenlabs', 'gemini', 'mistral', 'openai', 'sarvam',
   ]);
   // Every name storeApiKey accepts must resolve back to at least one kind.
   SERVICE_NAMES.forEach((name) => assert.ok(classify(name)?.length));

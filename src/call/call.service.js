@@ -46,6 +46,25 @@ const makeOutboundCall = async (data) => {
   });
 };
 
+/**
+ * Dispatch state of a queued outbound call. `POST /call/outbound` returns a `queue_id`
+ * and nothing else, so without this the caller has an identifier they cannot resolve.
+ *
+ * `dispatched` only means the handoff to the telephony provider succeeded — the live call
+ * outcome (`answered`, `busy`, `no_answer`, ...) arrives via the end-call webhook or the
+ * assistant call logs, not here.
+ */
+const getQueueStatus = async (userId, queueId) => {
+  const user = await getUserWithKey(userId);
+
+  return callExternal(user.api_key, {
+    path: `/call/queue/${queueId}`,
+    fallback: 'Failed to fetch queue status',
+    networkFallback: 'Failed to contact external call service',
+  });
+};
+
 module.exports = {
-  makeOutboundCall
+  makeOutboundCall,
+  getQueueStatus
 };

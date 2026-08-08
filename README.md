@@ -58,7 +58,7 @@ Every variable the runtime reads — all of them in `src/core/config.js`, mirror
 | `EXTERNAL_API_BASE` | `https://api-livekit-vyom.indusnettechnologies.com` | LiveKit Agents host; override for staging or a local mock |
 
 Notes:
-- Provider keys (TTS: `sarvam`/`cartesia`/`elevenlabs`/`mistral`, STT: `sarvam`, LLM: `openai`/`gemini`) are stored through integration APIs, not read from process env.
+- Provider keys (TTS: `sarvam`/`cartesia`/`elevenlabs`/`mistral`, STT: `sarvam`/`cartesia`/`deepgram`/`elevenlabs`/`openai`, LLM: `openai`/`gemini`) are stored through integration APIs, not read from process env. Several vendors share one row across slots — see [STT API key resolution](#stt-api-key-resolution).
 - `src/integration/providers.js` is the single source of truth for which `service_name` row holds which key. Adding a provider means one entry there, not a grep across modules. Run `node src/integration/providers.js` for its self-check.
 - Assistant payload rules (TTS/STT pairing, mode inference, field whitelist) have their own
   self-check: `node scripts/check-assistant-payload.js`. No DB or network needed.
@@ -127,7 +127,10 @@ Most endpoints require `user_id` in either query params or request body.
 ### Assistant (`/api/assistant`)
 
 - `POST /create` - Create assistant.
-- `GET /list?user_id=...` - List assistants.
+- `GET /list?user_id=...` - List assistants. Optional: `page`, `limit` (defaults to 100 here,
+  not the external API's 10, because existing clients expect the whole list in one call),
+  `assistant_name` (case-insensitive partial match), `start_date`, `end_date`, `sort_by`,
+  `sort_order`.
 - `GET /details/:id?user_id=...` - Assistant details.
 - `PATCH /update/:id` - Update assistant (`user_id` in body).
 - `DELETE /delete/:id` - Delete assistant (`user_id` in query/body).
@@ -138,12 +141,17 @@ Additional fields for create/update:
 
 Mode-aware fields for create/update:
 - `assistant_mode`: `pipeline` (default), `realtime`, or `cascade`.
-- `assistant_llm_config`: LLM config object. Forwarded in **all** modes. In `cascade` mode the
-  provider must be `openai` and `model` is a free-form chat model (default `gpt-4.1`).
+- `assistant_llm_config`: LLM config object. Forwarded in **all** modes. `provider` is `openai`
+  in pipeline and cascade, `gemini` or `openai` in realtime. `model` is validated against a
+  per-mode allowlist. Cascade adds seven generation knobs (`temperature`, `max_output_tokens`,
+  `reasoning_effort`, `service_tier`, `verbosity`, `tool_choice`, `parallel_tool_calls`) —
+  accepted in every mode, read only in cascade.
 - `assistant_tts_model` and `assistant_tts_config`: TTS fields (used when mode is `pipeline` or
   `cascade`).
-- `assistant_stt_model` and `assistant_stt_config`: STT fields. `sarvam` (default) or `native`
-  in pipeline; `sarvam` or `cartesia` in cascade (`native` rejected); ignored in realtime.
+- `assistant_stt_model` and `assistant_stt_config`: STT fields. `sarvam` (default), `native`,
+  `cartesia`, `deepgram`, `elevenlabs` or `openai`. `native` is pipeline-only and rejected in
+  cascade; the four plugin providers run for real in cascade and are stored-but-inert in
+  pipeline (the call falls back to native transcription). Ignored in realtime.
 
 The retired `assistant_llm_mode` alias is rejected with `400` — use `assistant_mode`. Old
 clients still sending it fail loudly instead of silently creating an assistant in the wrong mode.
@@ -163,17 +171,28 @@ Language fields, three of them, easy to confuse:
 
 Update semantics (mirrors the external API's validation rules):
 - Mode only changes on an explicit `assistant_mode`, or when TTS/STT fields are present.
-  Sending `assistant_llm_config` on its own is legal in pipeline mode (rotate `api_key`, pick
-  `gemini`) and leaves the stored TTS/STT config alone.
+  Sending `assistant_llm_config` on its own is legal in pipeline mode (rotate `api_key`, change
+  `model`) and leaves the stored TTS/STT config alone.
 - TTS goes out as a `model` + `config` pair; either half is enough, the other is filled in from
   the stored assistant. Switching TTS/STT provider without a new config resets to that
   provider's defaults rather than carrying the old provider's fields over.
-- Switching to `cascade`: STT must not be `native` (send `sarvam`/`cartesia` in the same
-  request) and `assistant_llm_config.provider` must be `openai` or omitted.
+- Switching to `cascade`: STT must not be `native` (send one of the five plugin providers in the
+  same request) and `assistant_llm_config.provider` must be `openai` or omitted.
+- Mode switches are validated against the **stored** assistant, not just the request, so a
+  change that is only unrunnable in combination is caught before anything is pushed upstream:
+  moving a stored `gemini` assistant to `pipeline`/`cascade`, or moving a stored realtime model
+  ID into `cascade`, returns `400` unless the corrected `assistant_llm_config` rides along in
+  the same request.
 
 LLM provider (`assistant_llm_config.provider`):
-- Vendor selector, `openai` or `gemini`. Honored in pipeline and realtime modes. In `cascade`
-  mode only `openai` is valid — `gemini` returns `400`.
+- Vendor selector, `openai` or `gemini`. In `realtime` both are valid. In `pipeline` and
+  `cascade` only `openai` is — `gemini` returns `400`.
+- **Gemini is realtime-only.** Pipeline is a half-cascade: the realtime model has to run in a
+  text-only response modality so an external TTS can speak the result, and Google's Live API
+  does not support that on its native-audio models. Use `assistant_mode: "realtime"` instead.
+- An assistant already stored on the retired `gemini` + `pipeline` pairing stays editable —
+  a rename or prompt edit does not touch the LLM and is not rejected — so its owner can always
+  repair it rather than being locked out of it.
 - Top-down persistent setting: stored on the assistant (`llm_provider`), defaults to `openai`.
 - **Consistent across a mode switch** — switching `pipeline`↔`realtime` without re-sending
   `provider` keeps the previously stored vendor. Only the vendor persists; `model`/`voice`
@@ -193,12 +212,19 @@ TTS API key resolution (pipeline only):
    no per-assistant override for TTS.
 
 STT API key resolution (pipeline and cascade):
-1. Integration key `sarvam` — the same row the TTS slot uses, since Sarvam issues one key for
-   both directions, else
-2. `cartesia` (`cascade` mode only) resolves the `cartesia` integration row — also shared with
-   the TTS slot, else
-3. `400 Integration required`. As with TTS, any `api_key` in `assistant_stt_config` is overwritten.
-4. `assistant_stt_model: "native"` (pipeline only) needs no key at all; its config is forwarded verbatim.
+1. The Integration row named after the selected provider. Most of them are **shared with
+   another slot**, so one stored key covers both and a rotation re-syncs both:
+
+   | `assistant_stt_model` | Integration row | Also backs |
+   |---|---|---|
+   | `sarvam` | `sarvam` | Sarvam TTS |
+   | `cartesia` | `cartesia` | Cartesia TTS |
+   | `elevenlabs` | `elevenlabs` | ElevenLabs TTS |
+   | `openai` | `openai` | the LLM slot |
+   | `deepgram` | `deepgram` | nothing — STT-only, and the one genuinely new row |
+
+2. Else `400 Integration required`. As with TTS, any `api_key` in `assistant_stt_config` is overwritten.
+3. `assistant_stt_model: "native"` (pipeline only) needs no key at all; its config is forwarded verbatim.
 
 One provider, one row. The map of model → `service_name` lives in
 `src/integration/providers.js`; `POST /api/integration/store` rejects any
@@ -207,27 +233,60 @@ One provider, one row. The map of model → `service_name` lives in
 Other behavior:
 - `assistant_interaction_config.filler_words` is always forced to `false` in realtime mode.
 - Pipeline-only TTS fields are ignored/stripped when sending realtime updates.
-- `cascade` mode: STT must be `sarvam` or `cartesia`, LLM provider must be `openai`.
+- `cascade` mode: STT must be one of the five plugin providers, LLM provider must be `openai`.
 
 ### Models & Providers (reference)
 
-Realtime LLM defaults — `provider`: `gemini` (realtime) / `openai` (pipeline);
-`model`: `gemini-3.1-flash-live-preview` / `gpt-realtime-1.5`; `voice`: `Puck` / `marin`
-(voice honored in realtime only).
+The allowlists live in `src/assistant/assistant.rules.js` (`OPENAI_REALTIME_MODELS`,
+`OPENAI_CASCADE_MODELS`, `CASCADE_STT_MODELS`). They mirror the external API's own validators so
+a bad model fails here with a readable `400` listing the valid values. When upstream adds a
+model, add it there and here.
 
-Cascade LLM — `provider` `openai` only, `model` free-form (default `gpt-4.1`). Known-good:
-`gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`,
-`gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
-`chatgpt-4o-latest`.
+Realtime LLM (`pipeline`, `realtime`) — `provider`: `gemini` (realtime default) / `openai`
+(pipeline, and the only option there); `voice`: `Puck` / `marin`, honored in realtime only.
+OpenAI `model` is one of `gpt-realtime`, `gpt-realtime-1.5` (default), `gpt-realtime-mini`,
+`gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`. Gemini model IDs are deliberately
+free-form (default `gemini-3.1-flash-live-preview`) — Google ships new Live models faster than
+an allowlist can track.
 
-STT — `sarvam` (pipeline default + cascade): `model` `saaras:v3` (also `saaras:v2.5`,
-`saarika:v2.5`), `language` `unknown` auto-detect (24 `-IN` codes), `mode` `codemix` (only
-honored in cascade). `cartesia` (cascade only): `model` `ink-whisper` (43 languages) / `ink-2`
-(English only), fixed `language`. `native` (pipeline only): the realtime LLM transcribes itself.
+Cascade LLM — `provider` `openai` only; `model` validated (default `gpt-4.1`): `gpt-4.1`,
+`gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`,
+`gpt-5.1`, `gpt-5.1-chat-latest`, `gpt-5.2`, `gpt-5.2-chat-latest`, `gpt-5.3-chat-latest`,
+`gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`, `chat-latest`, `gpt-oss-120b`. The realtime and cascade sets are **disjoint**:
+sending `gpt-4.1` in pipeline mode, or `gpt-realtime-1.5` in cascade, is a `400` either way.
 
-TTS — the synthesis model is fixed per provider and not configurable: `cartesia` `sonic-3`
-(`voice_id`), `sarvam` `bulbul:v3` (`speaker`), `elevenlabs` `eleven_v3` (`voice_id`),
-`mistral` `voxtral-mini-tts-2603` (`voice_id`).
+Generation knobs (cascade only, all optional): `temperature` (0–2), `max_output_tokens`,
+`reasoning_effort` (`none`…`max`), `service_tier` (`auto`/`default`/`flex`/`scale`/`priority`),
+`verbosity` (`low`/`medium`/`high`), `tool_choice` (`auto`/`required`/`none`),
+`parallel_tool_calls`. Reasoning models (`gpt-5`, `gpt-5.x`) **ignore `temperature`** — send
+`reasoning_effort` instead; non-reasoning models are the reverse.
+
+STT — five plugin providers plus `native`:
+
+| Provider | Model default | Notable config |
+|---|---|---|
+| `sarvam` | `saaras:v3` (also `saaras:v2.5`, `saarika:v2.5`) | `language` `unknown` auto-detects (24 `-IN` codes); `mode` `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`), honored in pipeline **and** cascade |
+| `cartesia` | `ink-whisper` (43 languages) / `ink-2` (English only) | fixed `language`, no auto-detect |
+| `deepgram` | `nova-3` (45 languages) / `nova-2` / `flux-general-en` / `flux-general-multi` | `language` (BCP-47 or `multi`), `enable_diarization` (nova only), `keyterm` (`nova-3`/`flux` only) |
+| `elevenlabs` | `scribe_v2_realtime` (~190 languages) / `scribe_v2` / `scribe_v1` | `language_code` (setting it disables auto-detect), `no_verbatim` |
+| `openai` | `gpt-4o-mini-transcribe` / `gpt-4o-transcribe` / `whisper-1` | `detect_language`, `language`, `prompt` (`whisper-1` only), `noise_reduction_type`, `use_realtime` (default `true`) |
+| `native` | pipeline only — the realtime LLM transcribes itself | no config |
+
+**Auto-detect is not uniform.** With the language field omitted, `sarvam` and `elevenlabs`
+auto-detect, but `deepgram` and `openai` fall back to `preferred_languages[0]` and then to plain
+`en`, and `cartesia` never auto-detects. For a caller who may switch languages, set `deepgram`
+`language: "multi"` or `openai` `detect_language: true` explicitly.
+
+TTS — the synthesis model is fixed per provider **except ElevenLabs**, which takes a `model`
+key (`eleven_v3` default, `eleven_multilingual_v2`, `eleven_turbo_v2_5`, `eleven_flash_v2_5`):
+`cartesia` `sonic-3` (`voice_id`; plus `language`, `speed` 0–3, `volume` 0–3, `emotion`,
+`pronunciation_dict_id`), `sarvam` `bulbul:v3` (`speaker`; plus `target_language_code`, `pace`
+0.3–3.0, `speech_sample_rate`, `temperature` 0.01–2.0), `elevenlabs` (`voice_id`; plus
+`voice_settings`), `mistral` `voxtral-mini-tts-2603` (`voice_id`, no synthesis params).
+
+Speaking rate is spelled differently per provider and the keys are not interchangeable:
+cartesia `speed`, sarvam `pace`, elevenlabs `voice_settings.speed`. Mistral has none.
 
 ### End-Call Webhook Payload
 
@@ -255,11 +314,19 @@ POST with the full call record on every terminal outcome (`completed`, `busy`, `
 - `POST /create-outbound-trunk` - Create SIP trunk. Pass `passthrough_mode: true` to create a passthrough-only trunk. Optionally pass `passthrough_webhook_url` to receive end-of-call notifications.
 - `GET /list?user_id=...` - List SIP trunks.
 - `GET /details/:id?user_id=...` - SIP trunk details.
-- `DELETE /delete/:id` - Delete SIP trunk (`user_id` in query/body).
+- `DELETE /delete/:id` - Deactivate the trunk upstream (`DELETE /sip/deactivate/{trunk_id}`, a
+  soft delete that keeps the record for audit) and remove the local mirror. `user_id` in
+  query/body. An already-inactive or already-deleted upstream trunk (400/404) still removes the
+  local row and reports `external_deactivated: false`; any other upstream failure aborts before
+  the local delete, so the two sides cannot drift.
 
 ### Call (`/api/call`)
 
-- `POST /outbound` - Trigger outbound call.
+- `POST /outbound` - Trigger outbound call. Returns a `queue_id`.
+- `GET /queue/:queue_id?user_id=...` - Dispatch state of a queued call: `pending`,
+  `dispatching`, `dispatched` or `failed`, plus `retry_count` and `last_error`. `dispatched`
+  means the handoff to the telephony provider succeeded — the live call outcome arrives via
+  the end-call webhook or the assistant call logs, not here. Works for passthrough queue ids too.
 
 ### Integration (`/api/integration`)
 
@@ -280,9 +347,11 @@ POST with the full call record on every terminal outcome (`completed`, `busy`, `
 create/update time, so rotating a key would otherwise leave old assistants on the dead key. When
 you `POST /store` a new/rotated key, a **background job** re-pushes the new key to every existing
 assistant that uses that provider — LLM keys (`openai`/`gemini`) match by `llm_provider`, TTS keys
-(`sarvam`/`cartesia`/`elevenlabs`/`mistral`) match by `tts_model`, and the `sarvam` key also
-matches by `stt_model`. A shared key covers every slot it backs: rotating `sarvam` re-pushes
-**both** the TTS and the STT config, in one request per assistant. Assistants created with their own per-request
+(`sarvam`/`cartesia`/`elevenlabs`/`mistral`) match by `tts_model`, and STT keys
+(`sarvam`/`cartesia`/`deepgram`/`elevenlabs`/`openai`) match by `stt_model`. A shared key covers
+every slot it backs, in one request per assistant: rotating `sarvam`, `cartesia` or `elevenlabs`
+re-pushes **both** the TTS and the STT config, and rotating `openai` re-pushes **both** the LLM
+and the cascade STT config. Assistants created with their own per-request
 `assistant_llm_config.api_key` / `assistant_tts_config.api_key` are left untouched.
 
 Frontend flow: after `POST /store` (or `POST /resync`), poll `GET /resync-status` every ~2s until
@@ -313,7 +382,12 @@ Human web-to-SIP calls with no AI agent. Web browser speaks directly to phone ca
 Prerequisites: a SIP trunk created with `passthrough_mode: true`.
 
 - `POST /passthrough-outbound` - Trigger passthrough call. Body: `user_id`, `trunk_id`, `to_number`, `metadata?`. Returns `room_token` (use with LiveKit JS/React SDK to connect browser), `room_name`, `queue_id`, `status`.
-- `GET /call-records?user_id=...` - List passthrough call records. Optional filters: `to_number`, `call_status`, `start_date`, `end_date`, `limit`, `offset`.
+- `GET /call-records?user_id=...` - List call records, passthrough-only by default. Optional:
+  `to_number`, `call_status`, `start_date`, `end_date`, `limit` (1-100), `page` (1-based),
+  `sort_by` (`started_at` | `ended_at` | `call_duration_minutes`), `sort_order` (`asc` | `desc`),
+  and `passthrough_only=false` to include AI calls. Every record carries `is_passthrough`, so a
+  mixed result is still unambiguous. **`offset` is gone** — the external API never read it, so
+  every page but the first silently returned page 1; use `page`.
 
 ### Inbound (`/api/inbound`)
 
@@ -401,7 +475,7 @@ INTVyom_Backend/
     ├── assistant/            # domain: orchestration + payload rules/builders + xlsx export
     │   ├── assistant.service.js  # create/list/details/delete + public surface for the rest
     │   ├── assistant.update.js   # update flow: target mode, upstream patch, local mirror
-    │   ├── assistant.billing.js  # call logs + billable-minute aggregation (paged)
+    │   ├── assistant.billing.js  # call logs + billable-minute aggregation (paged, bounded fan-out)
     │   ├── assistant.rules.js    # ASSISTANT_FIELDS, mode inference, pair resolution (pure)
     │   ├── assistant.builder.js  # TTS/STT/LLM config construction + key resolution
     │   ├── assistant.resync.js   # key-rotation re-sync job
@@ -422,6 +496,7 @@ INTVyom_Backend/
     │       └── livekitService.js
     └── core/
         ├── config.js         # Settings singleton — the only place process.env is read
+        ├── async/mapLimit.js # bounded-concurrency map, ordered results (billing fan-out)
         ├── db/
         │   ├── dbConnect.js
         │   ├── schemas/      # one mongoose model per file (user, assistant, sip, tool, ...)
@@ -441,6 +516,22 @@ Layer rules (see `.agents/skills/node-service-structure/`):
 - Every error path returns `{ error: message }` via `src/core/middleware/errorHandler.js` — handlers never build error bodies.
 - Logging goes through `getLogger(module)`; no `console.*` in application code, and never
   log an upstream response body (they carry API keys).
+
+### Billable minutes is the expensive endpoint
+
+Upstream has no billable-minutes aggregate, so `GET /api/assistant/platform-billable-minutes`
+builds one here: every assistant the user owns, every page of its call logs at 100 rows a page.
+Cost grows with account history, and with no `start_date`/`end_date` the window is the user's whole
+lifetime. Two things keep it honest:
+
+- The fan-out runs through `mapLimit` at `ASSISTANT_CONCURRENCY` × `PAGE_CONCURRENCY` (5 × 5) rather
+  than serially. Page 1 is still fetched first — it is what reports `total_pages`.
+- A per-assistant read failure is skipped, not fatal, so the response reports
+  `assistants_evaluated` / `assistants_skipped` and says so in `message`. A partial total presented
+  as a complete one is the failure mode worth guarding here.
+
+If it ever needs to be faster than this, the next step is a cache keyed on user + date window — not
+a bigger concurrency number.
 
 ## Data Stores
 
@@ -475,7 +566,7 @@ history (`git log --diff-filter=D -- scripts/`) if an old database ever has to b
 
 | Script | What it did |
 |---|---|
-| `migrate-stt-config.js` | dropped `interaction_config.user_stt_provider` / `.stt_api_key`, rewrote `stt_model: "openai"` |
+| `migrate-stt-config.js` | dropped `interaction_config.user_stt_provider` / `.stt_api_key`, rewrote `stt_model: "openai"` (which then *meant* native; `openai` is now a real cascade STT provider again, so post-migration rows selecting it are genuine selections, not leftovers) |
 | `migrate-tts-field-names.js` | renamed assistant `model` / `config` to `tts_model` / `tts_config` |
 | `backfill-llm-provider.js` | set `llm_provider` from `llm_config.provider`, defaulting to `openai` |
 | `drop-sarvam-stt-rows.js` | removed unreachable `sarvam_stt` integration rows and their re-sync jobs |

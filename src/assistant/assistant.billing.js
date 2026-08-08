@@ -6,12 +6,19 @@ const Assistant = require('../core/db/schemas/assistant.model');
 const { callExternal } = require('../services/livekit/livekitService');
 const getUserWithKey = require('../auth/userAccess');
 const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExternalId');
+const mapLimit = require('../core/async/mapLimit');
 const { getLogger } = require('../core/logging/logger');
 
 const logger = getLogger('assistant.billing');
 
 // Maximum page size the upstream accepts — fewer round trips per aggregation.
 const LOG_PAGE_LIMIT = 100;
+
+// How much of the fan-out runs at once. Small enough not to look like a burst to upstream, large
+// enough that the aggregation is not bounded by round-trip latency. Nested: at worst
+// ASSISTANT_CONCURRENCY × PAGE_CONCURRENCY requests are in flight.
+const ASSISTANT_CONCURRENCY = 5;
+const PAGE_CONCURRENCY = 5;
 
 // One external call-logs fetch. Shared by the raw log listing and both billable-minutes
 // aggregators.
@@ -37,29 +44,49 @@ const timespanEvaluated = (queryParams) => ({
 
 /**
  * Walk every page of one assistant's call logs, handing each page's logs to `onLogs`.
- * Stops on the last page, on an empty page, or when `onError` is given and a fetch fails.
+ *
+ * Page 1 has to come first — it is what reports `total_pages`. Everything after it is fetched
+ * concurrently, because page 7 does not depend on page 6 and waiting for it was most of the wall
+ * clock on any assistant with real history.
+ *
+ * `onLogs` is called in page order. Stops on an empty first page, or when `onError` is given and a
+ * fetch fails; without `onError` the error propagates.
  */
 const eachLogPage = async (apiKey, externalAssistantId, queryParams, onLogs, onError) => {
-  let currentPage = 1;
-  let totalPages = 1;
+  const fetchPage = (page) =>
+    fetchCallLogs(apiKey, externalAssistantId, logPageParams(page, queryParams));
 
-  do {
-    let response;
-    try {
-      response = await fetchCallLogs(apiKey, externalAssistantId, logPageParams(currentPage, queryParams));
-    } catch (error) {
-      if (!onError) throw error;
-      onError(error);
-      return;
-    }
+  let first;
+  try {
+    first = await fetchPage(1);
+  } catch (error) {
+    if (!onError) throw error;
+    onError(error);
+    return;
+  }
 
-    const callLogsData = response?.data;
-    if (!callLogsData || !callLogsData.logs) return;
+  const firstData = first?.data;
+  if (!firstData || !firstData.logs) return;
+  onLogs(firstData.logs);
 
-    onLogs(callLogsData.logs);
-    totalPages = callLogsData.pagination?.total_pages || 1;
-    currentPage++;
-  } while (currentPage <= totalPages);
+  const totalPages = firstData.pagination?.total_pages || 1;
+  if (totalPages <= 1) return;
+
+  const rest = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+
+  let pages;
+  try {
+    pages = await mapLimit(rest, PAGE_CONCURRENCY, fetchPage);
+  } catch (error) {
+    if (!onError) throw error;
+    onError(error);
+    return;
+  }
+
+  for (const response of pages) {
+    const logs = response?.data?.logs;
+    if (logs) onLogs(logs);
+  }
 };
 
 // Resolve one of the user's assistants by local _id or external id.
@@ -125,9 +152,13 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
   }
 
   const platformBillableMap = {};
+  let skipped = 0;
 
-  for (const assistant of assistants) {
-    await eachLogPage(
+  // Assistants are independent of each other, so they run concurrently. `platformBillableMap` is
+  // only ever touched from an `onLogs` callback, which runs synchronously inside a single-threaded
+  // event loop turn — there is no interleaving to guard against.
+  await mapLimit(assistants, ASSISTANT_CONCURRENCY, (assistant) =>
+    eachLogPage(
       user.api_key,
       assistant.external_assistant_id,
       queryParams,
@@ -138,11 +169,13 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
         }
       },
       // callExternal already flattens the upstream message onto the Error.
-      (error) => logger.error(
-        `failed to fetch logs for assistant ${assistant.external_assistant_id}: ${error.message}`
-      )
-    );
-  }
+      (error) => {
+        skipped += 1;
+        logger.error(
+          `failed to fetch logs for assistant ${assistant.external_assistant_id}: ${error.message}`
+        );
+      }
+    ));
 
   const aggregatedData = Object.keys(platformBillableMap).map((platform_number) => ({
     platform_number,
@@ -151,10 +184,15 @@ const getPlatformWiseBillableMinutes = async (userId, queryParams) => {
 
   return {
     success: true,
-    message: 'Platform-wise billable minutes calculated successfully',
+    message: skipped > 0
+      ? `Platform-wise billable minutes calculated, but ${skipped} of ${assistants.length} assistants could not be read — the totals below are incomplete`
+      : 'Platform-wise billable minutes calculated successfully',
     data: {
       platform_wise_minutes: aggregatedData,
       timespan_evaluated: timespanEvaluated(queryParams),
+      // Reported so a partial total is never presented as a complete one.
+      assistants_evaluated: assistants.length,
+      assistants_skipped: skipped,
     },
   };
 };

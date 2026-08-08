@@ -7,6 +7,7 @@ const {
   normalizeMode,
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
+  assertLlmModelAllowedInMode,
   inferTargetModeForUpdate,
   resolvePairForUpdate,
 } = require('../../src/assistant/assistant.rules');
@@ -53,9 +54,45 @@ test('sanitizeInteractionConfigForMode forces filler_words off in realtime', () 
 
 test('assertSttModelAllowedInMode enforces per-mode STT rules', () => {
   assert.doesNotThrow(() => assertSttModelAllowedInMode('pipeline', 'sarvam'));
-  assert.throws(() => assertSttModelAllowedInMode('cascade', 'native'), /cascade/);
-  assert.throws(() => assertSttModelAllowedInMode('pipeline', 'cartesia'), /cascade/);
-  assert.doesNotThrow(() => assertSttModelAllowedInMode('cascade', 'cartesia'));
+  assert.doesNotThrow(() => assertSttModelAllowedInMode('pipeline', 'native'));
+
+  // Cascade takes all five plugin providers; only `native` is out, because there is no
+  // realtime model there to transcribe itself.
+  for (const model of ['sarvam', 'cartesia', 'deepgram', 'elevenlabs', 'openai']) {
+    assert.doesNotThrow(() => assertSttModelAllowedInMode('cascade', model));
+  }
+  assert.throws(() => assertSttModelAllowedInMode('cascade', 'native'), /cascade mode/);
+
+  // Cascade-native providers are ACCEPTED in pipeline: upstream stores the selection and
+  // degrades transcription to native for the call, so switching to cascade later just works.
+  for (const model of ['cartesia', 'deepgram', 'elevenlabs', 'openai']) {
+    assert.doesNotThrow(() => assertSttModelAllowedInMode('pipeline', model));
+  }
+
+  // Unknown names still fail here rather than reaching upstream as a 422.
+  assert.throws(() => assertSttModelAllowedInMode('pipeline', 'whisper'), /must be one of/);
+  assert.throws(() => assertSttModelAllowedInMode('cascade', 'whisper'), /must be one of/);
+
+  // Realtime ignores STT entirely — anything is stored for the day the mode changes.
+  assert.doesNotThrow(() => assertSttModelAllowedInMode('realtime', 'native'));
+  // An unset model is never an error; upstream fills in its own default.
+  assert.doesNotThrow(() => assertSttModelAllowedInMode('cascade', undefined));
+});
+
+test('assertLlmModelAllowedInMode splits the realtime and cascade model families', () => {
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-4.1'));
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-5.6-luna'));
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('pipeline', 'openai', 'gpt-realtime-1.5'));
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'openai', 'gpt-realtime-mini'));
+
+  // The two sets are disjoint: each family's IDs are an error in the other's mode.
+  assert.throws(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-realtime-1.5'), /not valid in cascade/);
+  assert.throws(() => assertLlmModelAllowedInMode('pipeline', 'openai', 'gpt-4.1'), /not valid in pipeline/);
+
+  // Gemini Live IDs stay free-form — Google ships new ones faster than an allowlist can track.
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-9-live-whatever'));
+  // Unset model: upstream applies its own per-mode default.
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('cascade', 'openai', undefined));
 });
 
 test('inferTargetModeForUpdate: llm_config alone never flips the mode', () => {

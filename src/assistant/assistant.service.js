@@ -12,6 +12,7 @@ const {
   normalizeMode,
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
+  assertLlmModelAllowedInMode,
 } = require('./assistant.rules');
 const {
   buildPipelineTtsConfig,
@@ -60,6 +61,7 @@ const createAssistant = async (data) => {
     mode,
     modeExplicit: true
   });
+  assertLlmModelAllowedInMode(mode, provider, assistant_llm_config?.model);
   const interactionConfig = sanitizeInteractionConfigForMode(assistant_interaction_config, mode);
 
   // 3. Construct External Payload

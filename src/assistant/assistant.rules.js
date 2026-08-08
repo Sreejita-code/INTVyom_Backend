@@ -9,6 +9,48 @@ const badRequest = (message) => {
   return error;
 };
 
+// --- Upstream allowlists -----------------------------------------------------------------
+// Mirrors of the external API's validators. They exist so a bad model or provider fails here
+// with a readable 400 listing the valid values, instead of reaching upstream as a 422 whose
+// body the proxy would have to unwrap. When upstream adds a model, add it here too.
+
+// Realtime model IDs — used by `pipeline` (text-only modality) and `realtime` + openai.
+const OPENAI_REALTIME_MODELS = [
+  'gpt-realtime',
+  'gpt-realtime-1.5',
+  'gpt-realtime-mini',
+  'gpt-4o-realtime-preview',
+  'gpt-4o-mini-realtime-preview',
+];
+
+// Plain chat models for the cascade LLM stage. Disjoint from the realtime set on purpose:
+// sending `gpt-4.1` in pipeline mode, or `gpt-realtime-1.5` in cascade, is a mistake either way.
+const OPENAI_CASCADE_MODELS = [
+  'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
+  'gpt-4o', 'gpt-4o-mini',
+  'gpt-5', 'gpt-5-mini', 'gpt-5-nano',
+  'gpt-5.1', 'gpt-5.1-chat-latest',
+  'gpt-5.2', 'gpt-5.2-chat-latest',
+  'gpt-5.3-chat-latest',
+  'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano',
+  'gpt-5.5',
+  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+  'chat-latest',
+  'gpt-oss-120b',
+];
+
+// Gemini Live model IDs are deliberately NOT listed: Google ships new ones often and an
+// allowlist would reject them the day they land. Upstream leaves them free-form too.
+
+// STT providers per mode. `native` means "the realtime model transcribes itself", so it is
+// pipeline-only. The four plugin providers are cascade-native but are *accepted* in pipeline:
+// upstream stores the selection and degrades to native transcription for the call, so
+// switching the assistant to cascade later needs no second edit.
+const CASCADE_STT_MODELS = ['sarvam', 'cartesia', 'deepgram', 'elevenlabs', 'openai'];
+const PIPELINE_STT_MODELS = [...CASCADE_STT_MODELS, 'native'];
+
+const quotedList = (values) => values.map((v) => `'${v}'`).join(', ');
+
 // Every assistant_* field the external API accepts, in create-payload order. Drives both the
 // create destructure and the update whitelist: forwarding an unknown or retired key (the removed
 // assistant_interaction_config.user_stt_provider, a client typo) makes the external API answer 422.
@@ -69,15 +111,49 @@ const sanitizeInteractionConfigForMode = (interactionConfig, mode) => {
   return sanitized;
 };
 
+// STT selection rules. Realtime ignores STT entirely (the model transcribes itself), so any
+// value is accepted and stored there for the day the assistant switches modes.
+//
+// Pipeline accepts every provider, including the cascade-native ones: upstream degrades them to
+// native transcription for the call rather than erroring, and keeps the stored selection.
+// Cascade rejects only `native` — there is no realtime model there to transcribe itself.
 const assertSttModelAllowedInMode = (mode, sttModel) => {
   if (sttModel === undefined || sttModel === null || sttModel === '') return;
 
-  if (mode === 'cascade' && sttModel === 'native') {
-    throw badRequest("assistant_stt_model must be 'sarvam' or 'cartesia' in cascade mode");
+  const model = String(sttModel).toLowerCase();
+
+  if (mode === 'cascade') {
+    if (!CASCADE_STT_MODELS.includes(model)) {
+      throw badRequest(
+        `assistant_stt_model must be one of ${quotedList(CASCADE_STT_MODELS)} in cascade mode` +
+        (model === 'native' ? " — 'native' needs a realtime model to transcribe itself" : '')
+      );
+    }
+    return;
   }
-  if (mode === 'pipeline' && sttModel === 'cartesia') {
-    throw badRequest("assistant_stt_model 'cartesia' is only supported in cascade mode");
+
+  if (mode === 'pipeline' && !PIPELINE_STT_MODELS.includes(model)) {
+    throw badRequest(`assistant_stt_model must be one of ${quotedList(PIPELINE_STT_MODELS)}`);
   }
+};
+
+// LLM model IDs are validated against a different list per mode, because each mode talks to a
+// different upstream API. Only OpenAI is checked — Gemini Live IDs stay free-form.
+// An unset model is always fine: upstream fills in its own per-mode default.
+const assertLlmModelAllowedInMode = (mode, provider, model) => {
+  if (model === undefined || model === null || model === '') return;
+  if (String(provider).toLowerCase() !== 'openai') return;
+
+  const allowed = mode === 'cascade' ? OPENAI_CASCADE_MODELS : OPENAI_REALTIME_MODELS;
+  if (allowed.includes(String(model))) return;
+
+  const hint = mode === 'cascade'
+    ? 'realtime model IDs belong to pipeline/realtime mode'
+    : 'plain chat model IDs belong to cascade mode';
+  throw badRequest(
+    `assistant_llm_config.model '${model}' is not valid in ${mode} mode (${hint}). ` +
+    `Expected one of: ${quotedList(allowed)}`
+  );
 };
 
 // Which mode a PATCH targets. Only an explicit assistant_mode or the presence of TTS/STT
@@ -133,6 +209,11 @@ const resolvePairForUpdate = (updateData, existing, kind) => {
 module.exports = {
   badRequest,
   ASSISTANT_FIELDS,
+  OPENAI_REALTIME_MODELS,
+  OPENAI_CASCADE_MODELS,
+  CASCADE_STT_MODELS,
+  PIPELINE_STT_MODELS,
+  assertLlmModelAllowedInMode,
   rejectRetiredModeAlias,
   requestedModeFrom,
   pickAssistantFields,

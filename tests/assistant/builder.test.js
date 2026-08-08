@@ -52,11 +52,28 @@ test('buildPipelineTtsConfig does not mutate the caller config', async () => {
 test('resolveProvider is mode-aware and rejects unknown providers', () => {
   assert.strictEqual(resolveProvider({ mode: 'realtime', modeExplicit: true }), 'gemini');
   assert.strictEqual(resolveProvider({ mode: 'pipeline', modeExplicit: true }), 'openai');
-  assert.strictEqual(resolveProvider({ llmConfig: { provider: 'GEMINI' }, mode: 'pipeline' }), 'gemini');
-  // Not explicit: fall back to what the assistant already had.
-  assert.strictEqual(resolveProvider({ existing: { llm_provider: 'gemini' }, mode: 'pipeline' }), 'gemini');
+  assert.strictEqual(resolveProvider({ llmConfig: { provider: 'GEMINI' }, mode: 'realtime' }), 'gemini');
+  assert.strictEqual(resolveProvider({ llmConfig: { provider: 'openai' }, mode: 'realtime' }), 'openai');
   assert.throws(() => resolveProvider({ llmConfig: { provider: 'gemini' }, mode: 'cascade' }), /cascade/);
   assert.throws(() => resolveProvider({ llmConfig: { provider: 'llama' }, mode: 'pipeline' }), /provider must be/);
+
+  // Gemini is realtime-only: pipeline is a half-cascade and needs a text-only response
+  // modality, which Google's Live API cannot do on its native-audio models.
+  assert.throws(
+    () => resolveProvider({ llmConfig: { provider: 'gemini' }, mode: 'pipeline' }),
+    /not supported in pipeline mode/
+  );
+  // Naming a mode without a provider resets to that mode's default rather than carrying the
+  // stored one forward — so an explicit switch to pipeline lands on openai, not gemini.
+  assert.strictEqual(
+    resolveProvider({ existing: { llm_provider: 'gemini' }, mode: 'pipeline', modeExplicit: true }),
+    'openai'
+  );
+
+  // A PATCH that names neither a provider nor a mode still resolves the stored value:
+  // an assistant left on the retired gemini/pipeline pairing must stay editable (rename,
+  // prompt edit) so its owner can fix it, instead of 400-ing on every request.
+  assert.strictEqual(resolveProvider({ existing: { llm_provider: 'gemini' }, mode: 'pipeline' }), 'gemini');
 });
 
 test('buildLlmConfig prefers a caller key and drops the key when none resolves', async () => {

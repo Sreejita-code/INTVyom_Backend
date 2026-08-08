@@ -13,6 +13,7 @@ const {
   pickAssistantFields,
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
+  assertLlmModelAllowedInMode,
   inferTargetModeForUpdate,
   resolvePairForUpdate,
 } = require('./assistant.rules');
@@ -140,6 +141,31 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   // is mandatory.
   const touchesLlm = llmConfigProvided || (modeRequestedExplicitly && targetMode === 'realtime');
 
+  // A mode switch is checked against the STORED provider too, not just the request. Naming a
+  // mode alone resets the local provider to that mode's default, but upstream still holds
+  // `gemini` — and it answers 400 for that pairing. Ask for the fix in the same PATCH instead
+  // of letting the request half-apply.
+  // Keyed on shouldIncludeModeInExternal, not on an explicit assistant_mode: a TTS/STT edit
+  // also sends a mode upstream (inferred), and that inferred mode hits the same wall.
+  const storedProvider = existingAssistant?.llm_provider ?? existingAssistant?.llm_config?.provider;
+  if (shouldIncludeModeInExternal && targetMode !== 'realtime' && !llmConfigProvided && storedProvider === 'gemini') {
+    throw badRequest(
+      `assistant_mode '${targetMode}' cannot run on the stored LLM provider 'gemini' — ` +
+      "send assistant_llm_config with provider 'openai' (and a matching model) in the same request"
+    );
+  }
+
+  // Same merged-state check as STT: naming a new mode over a stored model from the other
+  // family (a realtime ID on a row moving to cascade) is unrunnable, so catch it here rather
+  // than after the assistant has already been half-migrated upstream.
+  if (llmConfigProvided || modeRequestedExplicitly) {
+    assertLlmModelAllowedInMode(
+      targetMode,
+      provider,
+      updateData.assistant_llm_config?.model ?? existingAssistant?.llm_config?.model
+    );
+  }
+
   // Whitelist, not a spread: only fields the external API knows about go out.
   const externalUpdatePayload = pickAssistantFields(updateData);
 
@@ -172,11 +198,14 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   if (targetMode === 'realtime') {
     stripPipelineFields(externalUpdatePayload);
   } else {
+    // Re-check the STT selection against the merged result, not just the request: switching an
+    // assistant into cascade while it still holds `native` is unrunnable even though neither
+    // half of the request is wrong on its own.
     if (targetMode === 'cascade') {
-      const effectiveSttModel = updateData.assistant_stt_model ?? existingAssistant?.stt_model;
-      if (effectiveSttModel === 'native') {
-        throw badRequest("assistant_stt_model must be 'sarvam' or 'cartesia' in cascade mode");
-      }
+      assertSttModelAllowedInMode(
+        targetMode,
+        updateData.assistant_stt_model ?? existingAssistant?.stt_model
+      );
     }
 
     const ttsTouched =

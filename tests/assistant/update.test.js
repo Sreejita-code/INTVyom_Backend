@@ -106,9 +106,58 @@ test('cascade rejects the native STT model', async () => {
 
   await assert.rejects(
     () => updateAssistant('u1', 'ext-1', { assistant_stt_config: { language: 'hi-IN' } }),
-    /must be 'sarvam' or 'cartesia' in cascade mode/
+    /must be one of .* in cascade mode/
   );
   // Nothing reached the upstream.
+  assert.strictEqual(sent.patch, null);
+});
+
+test('a stored gemini assistant cannot be switched to pipeline or cascade in one hop', async () => {
+  storedAssistant.llm_mode = 'realtime';
+  storedAssistant.llm_provider = 'gemini';
+
+  for (const mode of ['pipeline', 'cascade']) {
+    await assert.rejects(
+      () => updateAssistant('u1', 'ext-1', { assistant_mode: mode }),
+      /cannot run on the stored LLM provider 'gemini'/
+    );
+    assert.strictEqual(sent.patch, null);
+  }
+
+  // A TTS edit infers a mode too, and that inferred mode hits the same wall.
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_tts_model: 'sarvam' }),
+    /cannot run on the stored LLM provider 'gemini'/
+  );
+  assert.strictEqual(sent.patch, null);
+
+  // Sending the corrected provider in the SAME request is the documented way through.
+  await updateAssistant('u1', 'ext-1', {
+    assistant_mode: 'cascade',
+    assistant_llm_config: { provider: 'openai', model: 'gpt-4.1-mini' },
+  });
+  assert.strictEqual(sent.patch.data.assistant_llm_config.provider, 'openai');
+  assert.strictEqual(sent.localUpdate.llm_provider, 'openai');
+});
+
+test('an existing gemini/pipeline assistant stays editable', async () => {
+  // The pairing is retired upstream, but a rename must not 400 — that would lock the owner
+  // out of the very assistant they need to fix.
+  storedAssistant.llm_provider = 'gemini';
+
+  await updateAssistant('u1', 'ext-1', { assistant_name: 'Renamed' });
+  assert.deepStrictEqual(sent.patch.data, { assistant_name: 'Renamed' });
+});
+
+test('a cascade LLM model from the realtime family is rejected before any call', async () => {
+  storedAssistant.llm_mode = 'cascade';
+
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', {
+      assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5' },
+    }),
+    /not valid in cascade mode/
+  );
   assert.strictEqual(sent.patch, null);
 });
 
