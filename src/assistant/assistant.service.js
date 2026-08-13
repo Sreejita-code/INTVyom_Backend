@@ -20,6 +20,7 @@ const {
   resolveProvider,
   buildLlmConfig,
 } = require('./assistant.builder');
+const { validateAssistantConfiguration } = require('./assistant.validation');
 const { resyncAssistantsForIntegration } = require('./assistant.resync');
 const { updateAssistant } = require('./assistant.update');
 const {
@@ -53,6 +54,17 @@ const createAssistant = async (data) => {
   // 1. Validate User
   rejectRetiredModeAlias(data);
   const user = await getUserWithKey(user_id);
+
+  // 2. Validate Assistant Configuration
+  const validation = validateAssistantConfiguration(data);
+  if (!validation.isValid) {
+    const error = new Error(validation.message);
+    error.status = 400;
+    if (validation.suggestions) {
+      error.suggestions = validation.suggestions;
+    }
+    throw error;
+  }
 
   const mode = normalizeMode(assistant_mode, 'pipeline');
   const provider = resolveProvider({
@@ -187,12 +199,31 @@ const deleteAssistant = async (userId, assistantId) => {
   };
 };
 
+// --- 5. Validate Assistant Configuration ---
+const validateAssistant = async (userId, assistantConfig) => {
+  // Validate User
+  const user = await getUserWithKey(userId);
+  
+  // Validate Assistant Configuration
+  const validation = validateAssistantConfiguration(assistantConfig);
+  
+  return {
+    success: true,
+    message: validation.message,
+    data: {
+      is_valid: validation.isValid,
+      suggestions: validation.suggestions || null
+    }
+  };
+};
+
 module.exports = {
   createAssistant,
   listAssistants,
   getAssistantDetails,
   updateAssistant,
   deleteAssistant,
+  validateAssistant,
   getCallLogs,
   getTotalBillableDuration,
   getPlatformWiseBillableMinutes,

@@ -163,4 +163,184 @@ router.get('/platform-billable-minutes/download', asyncHandler(async (req, res) 
   res.status(200).end();
 }));
 
+router.post('/validate', asyncHandler(async (req, res) => {
+  const { user_id, ...assistantConfig } = req.body || {};
+
+  if (!user_id) throw httpError(400, 'user_id is required in the request body');
+
+  const result = await assistantService.validateAssistant(user_id, assistantConfig);
+  res.status(200).json(result);
+}));
+
+router.get('/templates', asyncHandler(async (req, res) => {
+  const templateService = require('../../assistant/template.service');
+  const templates = templateService.getAllTemplateMetadata();
+  
+  res.status(200).json({
+    success: true,
+    message: 'Templates retrieved successfully',
+    data: templates
+  });
+}));
+
+router.get('/templates/:id', asyncHandler(async (req, res) => {
+  const templateService = require('../../assistant/template.service');
+  const { id } = req.params;
+  
+  const template = templateService.getTemplateById(id);
+  
+  if (!template) {
+    throw httpError(404, `Template '${id}' not found`);
+  }
+  
+  res.status(200).json({
+    success: true,
+    message: 'Template retrieved successfully',
+    data: template
+  });
+}));
+
+router.post('/templates/:id/apply', asyncHandler(async (req, res) => {
+  const templateService = require('../../assistant/template.service');
+  const { id } = req.params;
+  const { user_id, ...overrides } = req.body || {};
+  
+  if (!user_id) throw httpError(400, 'user_id is required in the request body');
+  
+  const templateConfig = templateService.getTemplateConfiguration(id);
+  
+  if (!templateConfig) {
+    throw httpError(404, `Template '${id}' not found`);
+  }
+  
+  // Apply overrides to template configuration
+  const finalConfig = { ...templateConfig, ...overrides };
+  
+  // Remove template-specific fields that shouldn't be sent to create
+  delete finalConfig.template_id;
+  
+  // Add user_id to the configuration
+  finalConfig.user_id = user_id;
+  
+  // Create the assistant with the template configuration
+  const assistant = await assistantService.createAssistant(finalConfig);
+  
+  res.status(201).json({
+    success: true,
+    message: 'Assistant created from template successfully',
+    data: assistant
+  });
+}));
+
+// Wizard endpoints
+router.get('/wizard/steps', asyncHandler(async (req, res) => {
+  const wizardService = require('../../assistant/wizard.service');
+  const { config } = req.query;
+  
+  let parsedConfig = {};
+  if (config) {
+    try {
+      parsedConfig = JSON.parse(config);
+    } catch (e) {
+      // Ignore parsing errors
+    }
+  }
+  
+  const steps = wizardService.getConfigurationSteps(parsedConfig);
+  
+  res.status(200).json({
+    success: true,
+    message: 'Wizard steps retrieved successfully',
+    data: steps
+  });
+}));
+
+router.get('/wizard/steps/:id', asyncHandler(async (req, res) => {
+  const wizardService = require('../../assistant/wizard.service');
+  const { id } = req.params;
+  const { config } = req.query;
+  
+  let parsedConfig = {};
+  if (config) {
+    try {
+      parsedConfig = JSON.parse(config);
+    } catch (e) {
+      // Ignore parsing errors
+    }
+  }
+  
+  const stepDetails = wizardService.getStepDetails(id, parsedConfig);
+  
+  if (!stepDetails) {
+    throw httpError(404, `Wizard step '${id}' not found`);
+  }
+  
+  res.status(200).json({
+    success: true,
+    message: 'Wizard step details retrieved successfully',
+    data: stepDetails
+  });
+}));
+
+router.post('/wizard/steps/:id/validate', asyncHandler(async (req, res) => {
+  const wizardService = require('../../assistant/wizard.service');
+  const { id } = req.params;
+  const { step_data, current_config } = req.body || {};
+  
+  const validation = wizardService.validateStep(id, step_data || {}, current_config || {});
+  
+  res.status(200).json({
+    success: true,
+    message: validation.isValid ? 'Step is valid' : 'Step validation failed',
+    data: validation
+  });
+}));
+
+router.get('/wizard/navigation', asyncHandler(async (req, res) => {
+  const wizardService = require('../../assistant/wizard.service');
+  const { current_step, config } = req.query;
+  
+  let parsedConfig = {};
+  if (config) {
+    try {
+      parsedConfig = JSON.parse(config);
+    } catch (e) {
+      // Ignore parsing errors
+    }
+  }
+  
+  const navigation = {
+    next: wizardService.getNextStep(current_step, parsedConfig),
+    previous: wizardService.getPreviousStep(current_step, parsedConfig)
+  };
+  
+  res.status(200).json({
+    success: true,
+    message: 'Navigation retrieved successfully',
+    data: navigation
+  });
+}));
+
+router.get('/wizard/status', asyncHandler(async (req, res) => {
+  const wizardService = require('../../assistant/wizard.service');
+  const { config } = req.query;
+  
+  let parsedConfig = {};
+  if (config) {
+    try {
+      parsedConfig = JSON.parse(config);
+    } catch (e) {
+      // Ignore parsing errors
+    }
+  }
+  
+  const status = wizardService.getCompletionStatus(parsedConfig);
+  
+  res.status(200).json({
+    success: true,
+    message: 'Completion status retrieved successfully',
+    data: status
+  });
+}));
+
 module.exports = router;

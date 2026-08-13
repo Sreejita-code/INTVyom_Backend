@@ -23,6 +23,7 @@ const {
   resolveProvider,
   buildLlmConfig,
 } = require('./assistant.builder');
+const { validateAssistantConfiguration } = require('./assistant.validation');
 
 // Local field name per incoming payload key. Explicit `undefined` checks below keep
 // boolean false and empty strings from being dropped.
@@ -121,10 +122,27 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   const user = await getUserWithKey(userId);
   rejectRetiredModeAlias(updateData);
 
+  // Validate Assistant Configuration
+  const existingAssistant = await Assistant.findOne({ external_assistant_id: assistantId });
+  
+  // Merge existing configuration with update data for validation
+  const mergedConfig = {
+    ...existingAssistant.toObject(),
+    ...updateData
+  };
+  
+  const validation = validateAssistantConfiguration(mergedConfig);
+  if (!validation.isValid) {
+    const error = new Error(validation.message);
+    error.status = 400;
+    if (validation.suggestions) {
+      error.suggestions = validation.suggestions;
+    }
+    throw error;
+  }
+
   const modeRequestedExplicitly = requestedModeFrom(updateData) !== undefined;
   const llmConfigProvided = updateData.assistant_llm_config !== undefined;
-
-  const existingAssistant = await Assistant.findOne({ external_assistant_id: assistantId });
 
   const { targetMode, modeDerivedFromPayload } = inferTargetModeForUpdate(
     updateData,
