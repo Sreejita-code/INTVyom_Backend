@@ -21,7 +21,7 @@ const LANGUAGE_STANDARDS = {
 
 // Valid language codes by provider
 const VALID_LANGUAGE_CODES = {
-  sarvam: ['as', 'bn', 'brx', 'doi', 'en', 'gu', 'hi', 'kn', 'kok', 'ks', 'mai', 'ml', 'mni', 'mr', 'ne', 'od', 'pa', 'sa', 'sat', 'sd', 'ta', 'te', 'ur', 'unknown'],
+  sarvam: ['as-IN', 'bn-IN', 'brx-IN', 'doi-IN', 'en-IN', 'gu-IN', 'hi-IN', 'kn-IN', 'kok-IN', 'ks-IN', 'mai-IN', 'ml-IN', 'mni-IN', 'mr-IN', 'ne-IN', 'od-IN', 'pa-IN', 'sa-IN', 'sat-IN', 'sd-IN', 'ta-IN', 'te-IN', 'ur-IN', 'unknown'],
   cartesia: ['en', 'de', 'es', 'fr', 'ja', 'pt', 'zh', 'hi', 'ko', 'it', 'nl', 'pl', 'ru', 'sv', 'tr', 'tl', 'bg', 'ro', 'ar', 'cs', 'el', 'fi', 'hr', 'ms', 'sk', 'da', 'ta', 'uk', 'hu', 'no', 'vi', 'bn', 'th', 'he', 'ka', 'id', 'te', 'gu', 'kn', 'ml', 'mr', 'or', 'pa'],
   deepgram: null, // Deepgram accepts many BCP-47 codes
   elevenlabs: null, // ElevenLabs auto-detects ~190 languages
