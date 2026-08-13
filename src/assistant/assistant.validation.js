@@ -28,19 +28,78 @@ const VALID_LANGUAGE_CODES = {
   openai: null // OpenAI accepts ISO 639-1 codes
 };
 
-// Model families for parameter validation
+// Model families for parameter validation. Mirror of api_livekit's
+// src/core/agents/llm_capabilities.py — membership is spelled out per model and matched
+// exactly, never by prefix. A prefix test reads every '*-chat-latest' id as a reasoning
+// model (they all start with 'gpt-5') *and* as a chat model, so both temperature and
+// reasoning_effort were rejected for them and there was no accepted way to configure one.
+// When upstream adds a model, add it to the same list here.
+
+// Reasoning models: take `reasoning_effort`, reject `temperature`.
 const REASONING_MODELS = [
   'gpt-5', 'gpt-5-mini', 'gpt-5-nano',
   'gpt-5.1', 'gpt-5.2', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano',
   'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'
 ];
 
+// Non-reasoning chat models: `temperature` yes, `reasoning_effort` no. The '*-chat-latest'
+// aliases track a gpt-5.x *chat* snapshot, so they belong here — but they are still the
+// gpt-5 generation for `verbosity` (see GPT5_GENERATION). gpt-oss-120b is the open-weight
+// model, served off-platform, so it gets the conservative knob set.
 const CHAT_MODELS = [
   'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
   'gpt-4o', 'gpt-4o-mini',
   'gpt-5.1-chat-latest', 'gpt-5.2-chat-latest', 'gpt-5.3-chat-latest',
   'chat-latest', 'gpt-oss-120b'
 ];
+
+// `verbosity` (`text.verbosity`) is a gpt-5 generation parameter, which includes that
+// generation's chat aliases. Stated as an allowlist, not a denylist of gpt-4 ids: a
+// denylist silently accepted verbosity on gpt-oss-120b, which does not read it.
+const GPT5_GENERATION = [
+  ...REASONING_MODELS,
+  'gpt-5.1-chat-latest', 'gpt-5.2-chat-latest', 'gpt-5.3-chat-latest', 'chat-latest'
+];
+
+// Reasoning models that reject `reasoning_effort` once function tools are attached.
+const REASONING_TOOL_INCOMPATIBLE = ['gpt-5.2', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano'];
+
+/**
+ * Why this generation knob cannot go to this model, or null when the model reads it.
+ * Same table and same wording as the upstream 422 so all three layers agree.
+ * An unknown model — one outside both families — gets null for every knob rather than a
+ * guess; guessing is what the prefix test used to do.
+ * @param {string} model - The model ID
+ * @param {'temperature'|'reasoning_effort'|'verbosity'} knob - The parameter
+ * @param {boolean} hasTools - Whether the session will attach function tools
+ * @returns {string|null} The reason, or null when the pairing is fine
+ */
+const unsupportedKnobReason = (model, knob, hasTools = false) => {
+  const isReasoning = REASONING_MODELS.includes(model);
+  const isChat = CHAT_MODELS.includes(model);
+  if (!isReasoning && !isChat) {
+    return null;
+  }
+
+  if (knob === 'temperature' && isReasoning) {
+    return 'reasoning models reject temperature — set reasoning_effort instead';
+  }
+
+  if (knob === 'reasoning_effort') {
+    if (!isReasoning) {
+      return 'reasoning.effort is a reasoning-model parameter, and this is a chat model';
+    }
+    if (hasTools && REASONING_TOOL_INCOMPATIBLE.includes(model)) {
+      return 'this model rejects reasoning.effort while function tools are attached';
+    }
+  }
+
+  if (knob === 'verbosity' && !GPT5_GENERATION.includes(model)) {
+    return 'text.verbosity is a gpt-5 generation parameter';
+  }
+
+  return null;
+};
 
 // Detailed compatibility matrix with restrictions and notes
 const COMPATIBILITY_MATRIX = {
@@ -266,57 +325,24 @@ const validateModelParameters = (mode, provider, model, parameters = {}) => {
     };
   }
   
-  // Validate parameters based on model family
-  const isReasoningModel = REASONING_MODELS.some(rm => model.startsWith(rm));
-  const isChatModel = CHAT_MODELS.some(cm => model.startsWith(cm));
-  
-  // Check for incompatible parameters
-  if (isReasoningModel && parameters.temperature !== undefined) {
-    return {
-      isValid: false,
-      message: `Reasoning model '${model}' does not accept 'temperature' parameter. ` +
-               `Use 'reasoning_effort' instead. Reasoning models reject 'temperature' and take 'reasoning_effort'; ` +
-               `chat models are the reverse.`
-    };
-  }
-  
-  if (isChatModel && parameters.reasoning_effort !== undefined) {
-    return {
-      isValid: false,
-      message: `Chat model '${model}' does not accept 'reasoning_effort' parameter. ` +
-               `Use 'temperature' instead. Reasoning models reject 'temperature' and take 'reasoning_effort'; ` +
-               `chat models are the reverse.`
-    };
-  }
-  
-  // Special case for gpt-5.2 and gpt-5.4* models
-  const specialModels = ['gpt-5.2', 'gpt-5.4'];
-  const isSpecialModel = specialModels.some(sm => model.startsWith(sm));
-  
-  if (isSpecialModel && parameters.reasoning_effort !== undefined && 
-      (parameters.tool_ids || parameters.assistant_end_call_enabled)) {
-    return {
-      isValid: false,
-      message: `Model '${model}' rejects 'reasoning_effort' when tools are attached. ` +
-               `This model refuses 'reasoning.effort' in any request carrying function tools.`
-    };
-  }
-  
-  // Validate verbosity parameter
-  if (parameters.verbosity !== undefined) {
-    // gpt-5 generation accepts verbosity, but gpt-4.1* and gpt-4o* do not
-    const noVerbosityModels = ['gpt-4.1', 'gpt-4o'];
-    const hasNoVerbosity = noVerbosityModels.some(nvm => model.startsWith(nvm));
-    
-    if (hasNoVerbosity) {
+  // Check each model-gated knob against the family table. A knob the model does not read is
+  // not ignored by OpenAI: it answers 400 on every LLM turn, so the call connects and the
+  // assistant never speaks. Rejecting here means the operator finds out at save time.
+  const hasTools = Boolean(parameters.tool_ids || parameters.assistant_end_call_enabled);
+
+  for (const knob of ['temperature', 'reasoning_effort', 'verbosity']) {
+    if (parameters[knob] === undefined || parameters[knob] === null) {
+      continue;
+    }
+    const reason = unsupportedKnobReason(model, knob, hasTools);
+    if (reason) {
       return {
         isValid: false,
-        message: `Model '${model}' does not accept 'verbosity' parameter. ` +
-                 `Only gpt-5 generation models accept 'verbosity'.`
+        message: `assistant_llm_config.${knob} is not supported by model '${model}' — ${reason}.`
       };
     }
   }
-  
+
   return { isValid: true, message: 'Valid model parameters' };
 };
 
@@ -523,6 +549,9 @@ module.exports = {
   COMPATIBILITY_MATRIX,
   REASONING_MODELS,
   CHAT_MODELS,
+  GPT5_GENERATION,
+  REASONING_TOOL_INCOMPATIBLE,
+  unsupportedKnobReason,
   LANGUAGE_STANDARDS,
   VALID_LANGUAGE_CODES
 };
