@@ -53,14 +53,24 @@ info:
     | Field | Values | Default |
     | :--- | :--- | :--- |
     | `provider` | `openai` only in pipeline; `gemini` or `openai` in realtime | `gemini` in realtime, `openai` in pipeline |
-    | `model` | OpenAI: validated against the realtime list below. Gemini: any Live model string (not validated) | `gemini-3.1-flash-live-preview` (gemini), `gpt-realtime-1.5` (openai) |
-    | `voice` | provider voice name | `Puck` (gemini), `marin` (openai). Honored only in `realtime` — ignored in `pipeline` |
+    | `model` | OpenAI: validated against the realtime list below. Gemini: validated against the Live ID list below | `gemini-2.5-flash-native-audio-preview-12-2025` upstream / `gemini-3.1-flash-live-preview` in the starter template (gemini), `gpt-realtime-1.5` (openai) |
+    | `voice` | provider voice name. Gemini: closed 30-name roster; OpenAI: any name that is not a Gemini voice | `Puck` (gemini), `marin` (openai). Honored only in `realtime` — ignored in `pipeline` |
     | `api_key` | string | resolved from the Integrations module |
 
     OpenAI realtime model IDs (`pipeline`, and `realtime` + openai): `gpt-realtime`,
-    `gpt-realtime-1.5`, `gpt-realtime-mini`, `gpt-4o-realtime-preview`,
-    `gpt-4o-mini-realtime-preview`. Anything else is a `400` — a plain chat model such as
-    `gpt-4.1` belongs to cascade mode. Gemini Live IDs are deliberately free-form.
+    `gpt-realtime-1.5`, `gpt-realtime-2`, `gpt-realtime-2025-08-28`, `gpt-realtime-mini`.
+    Anything else is a `400` — a plain chat model such as `gpt-4.1` belongs to cascade mode.
+    The retired preview pair (`gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`) is
+    rejected: those accounts opened a session that could never connect.
+
+    Gemini Live IDs (realtime + gemini, default `gemini-2.5-flash-native-audio-preview-12-2025`):
+    `gemini-2.5-flash-native-audio-preview-12-2025`, `gemini-live-2.5-flash-native-audio`,
+    `gemini-3.1-flash-live-preview`. A non-Live Gemini ID (e.g. `gemini-2.5-flash`) is a `400` —
+    it opens a socket the API then closes. Gemini voices are closed to the 30-name roster
+    (`Zephyr`, `Puck`, `Charon`, `Kore`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`,
+    `Autonoe`, `Enceladus`, `Iapetus`, `Umbriel`, `Algieba`, `Despina`, `Erinome`, `Algenib`,
+    `Rasalgethi`, `Laomedeia`, `Achernar`, `Alnilam`, `Schedar`, `Gacrux`, `Pulcherrima`,
+    `Achird`, `Zubenelgenubi`, `Vindemiatrix`, `Sadachbia`, `Sadaltager`, `Sulafat`).
 
     ### Cascade LLM (`cascade` only)
     `provider` must be `openai` (any other value is rejected). `model` is validated against a
@@ -3353,19 +3363,21 @@ components:
           description: >
             Validated per mode against a different list, because each mode talks to a different
             API. Pipeline and realtime+openai: `gpt-realtime`, `gpt-realtime-1.5`,
-            `gpt-realtime-mini`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`
-            (default `gpt-realtime-1.5`). Realtime+gemini: any Live model string, unvalidated
-            (default `gemini-3.1-flash-live-preview`). Cascade (default `gpt-4.1`): `gpt-4.1`,
-            `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`,
-            `gpt-5-nano`, `gpt-5.1`, `gpt-5.1-chat-latest`, `gpt-5.2`, `gpt-5.2-chat-latest`,
-            `gpt-5.3-chat-latest`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
-            `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `chat-latest`, `gpt-oss-120b`.
+            `gpt-realtime-2`, `gpt-realtime-2025-08-28`, `gpt-realtime-mini`
+            (default `gpt-realtime-1.5`). Realtime+gemini: `gemini-2.5-flash-native-audio-preview-12-2025`,
+            `gemini-live-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview`
+            (upstream default `gemini-2.5-flash-native-audio-preview-12-2025`; the starter
+            template pins `gemini-3.1-flash-live-preview`). Cascade (default `gpt-4.1`):
+            `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`,
+            `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`,
+            `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`.
             The two sets are disjoint — sending one family's ID in the other's mode is a 400.
         voice:
           type: string
           description: >
             Realtime only (ignored in pipeline and cascade — the TTS provider owns the voice).
-            Gemini default `Puck`, OpenAI default `marin`.
+            Gemini default `Puck` — closed roster of 30 names. OpenAI default `marin` — any name
+            that is not a Gemini voice.
         api_key:
           type: string
           description: Ignored — the key always comes from the Integrations module.
@@ -3393,8 +3405,10 @@ components:
           example: "low"
         service_tier:
           type: string
-          enum: [auto, default, flex, scale, priority]
-          description: Cascade only. OpenAI processing/billing tier. Unset = OpenAI's default.
+          enum: [auto, default, fast, flex, priority]
+          description: >
+            Cascade only. OpenAI processing/billing tier. `flex` is only available on the
+            gpt-5 generation. Unset = OpenAI's default.
         verbosity:
           type: string
           enum: [low, medium, high]
@@ -3406,7 +3420,9 @@ components:
           enum: [auto, required, none]
           description: >
             Cascade only. Whether the model may call the assistant's attached tools.
-            `none` disables them for this assistant without detaching them.
+            `none` disables them for this assistant without detaching them. `required`
+            needs at least one tool attached. Requires `assistant_end_call_enabled` or a
+            tool in `assistant_llm_config.tool_ids`.
         parallel_tool_calls:
           type: boolean
           description: Cascade only. Allow more than one tool call in a single response.

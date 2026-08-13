@@ -8,6 +8,13 @@ const {
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
   assertLlmModelAllowedInMode,
+  assertLlmVoiceAllowedForProvider,
+  assertSttModelIdAllowed,
+  assertTtsModelIdAllowed,
+  assertSarvamSpeakerAllowed,
+  assertTtsPairProvidedForMode,
+  assertTtsPairForModeUpdate,
+  GEMINI_LIVE_MODELS,
   inferTargetModeForUpdate,
   resolvePairForUpdate,
 } = require('../../src/assistant/assistant.rules');
@@ -89,10 +96,94 @@ test('assertLlmModelAllowedInMode splits the realtime and cascade model families
   assert.throws(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-realtime-1.5'), /not valid in cascade/);
   assert.throws(() => assertLlmModelAllowedInMode('pipeline', 'openai', 'gpt-4.1'), /not valid in pipeline/);
 
-  // Gemini Live IDs stay free-form — Google ships new ones faster than an allowlist can track.
-  assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-9-live-whatever'));
   // Unset model: upstream applies its own per-mode default.
   assert.doesNotThrow(() => assertLlmModelAllowedInMode('cascade', 'openai', undefined));
+});
+
+test('assertLlmModelAllowedInMode: the new realtime IDs are accepted, the retired pair is not', () => {
+  for (const model of ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-2025-08-28', 'gpt-realtime-mini']) {
+    assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'openai', model), `${model} should be accepted`);
+  }
+  // Probed 2026-08-13: the account does not serve the preview pair — storing one produced a
+  // session that could not connect.
+  for (const model of ['gpt-4o-realtime-preview', 'gpt-4o-mini-realtime-preview']) {
+    assert.throws(() => assertLlmModelAllowedInMode('pipeline', 'openai', model), /not valid in pipeline/);
+  }
+});
+
+test('assertLlmModelAllowedInMode validates Gemini Live IDs, no longer free-form', () => {
+  for (const model of GEMINI_LIVE_MODELS) {
+    assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'gemini', model), `${model} should be accepted`);
+  }
+  // A Gemini chat id opens a socket the API then closes — refused at save time.
+  assert.throws(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-2.5-flash'), /not a Gemini Live model/);
+  assert.throws(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-9-live-whatever'), /not a Gemini Live model/);
+});
+
+test('assertLlmVoiceAllowedForProvider: closed Gemini roster, openai accepts non-Gemini names only', () => {
+  assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('gemini', 'Puck'));
+  assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('gemini', 'Charon'));
+  assert.throws(() => assertLlmVoiceAllowedForProvider('gemini', 'NotARealVoice'), /not a Gemini Live voice/);
+  // The asymmetric half: OpenAI has no SDK list, so any name that is NOT a Gemini voice works.
+  assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('openai', 'marin'));
+  assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('openai', 'brand-new-voice'));
+  // ...but a Gemini voice under openai is the exact mistake this catches.
+  assert.throws(() => assertLlmVoiceAllowedForProvider('openai', 'Puck'), /Gemini Live voice/);
+  // Unset voice is always fine.
+  assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('gemini', undefined));
+});
+
+test('assertSttModelIdAllowed and assertTtsModelIdAllowed enforce the per-provider model sets', () => {
+  assert.doesNotThrow(() => assertSttModelIdAllowed('deepgram', 'nova-3'));
+  assert.throws(() => assertSttModelIdAllowed('deepgram', 'nova-9'), /does not have a STT model called 'nova-9'/);
+  assert.doesNotThrow(() => assertSttModelIdAllowed('sarvam', 'saaras:v3'));
+  assert.throws(() => assertSttModelIdAllowed('sarvam', 'saaras:v4'), /does not have a STT model called 'saaras:v4'/);
+  assert.throws(() => assertSttModelIdAllowed('openai', 'gpt-realtime-whisper'), /does not have a STT model called/);
+  // `native` has no model field at all.
+  assert.doesNotThrow(() => assertSttModelIdAllowed('native', 'anything'));
+  assert.doesNotThrow(() => assertSttModelIdAllowed('deepgram', undefined));
+
+  assert.doesNotThrow(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v3'));
+  assert.throws(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v9'), /does not have a TTS model called 'eleven_v9'/);
+  // Pinned TTS providers take no model field.
+  assert.doesNotThrow(() => assertTtsModelIdAllowed('cartesia', 'sonic-9'));
+});
+
+test('assertSarvamSpeakerAllowed enforces the bulbul:v3 roster', () => {
+  assert.doesNotThrow(() => assertSarvamSpeakerAllowed('sarvam', 'shubh'));
+  assert.doesNotThrow(() => assertSarvamSpeakerAllowed('sarvam', 'varun'));
+  // v2 and v3 share no speaker names.
+  for (const speaker of ['anushka', 'manisha', 'vidya', 'arya', 'abhilash', 'karun', 'hitesh']) {
+    assert.throws(() => assertSarvamSpeakerAllowed('sarvam', speaker), /not available on bulbul:v3/);
+  }
+  // Only meaningful for Sarvam.
+  assert.doesNotThrow(() => assertSarvamSpeakerAllowed('cartesia', 'anushka'));
+  assert.doesNotThrow(() => assertSarvamSpeakerAllowed('sarvam', undefined));
+});
+
+test('assertTtsPairProvidedForMode requires both halves in pipeline/cascade, never in realtime', () => {
+  assert.doesNotThrow(() => assertTtsPairProvidedForMode('pipeline', 'cartesia', { voice_id: 'v1' }));
+  assert.throws(() => assertTtsPairProvidedForMode('pipeline', 'cartesia', undefined), /assistant_tts_config is required/);
+  assert.throws(() => assertTtsPairProvidedForMode('cascade', undefined, { voice_id: 'v1' }), /assistant_tts_model is required/);
+  assert.doesNotThrow(() => assertTtsPairProvidedForMode('realtime', undefined, undefined));
+});
+
+test('assertTtsPairForModeUpdate only demands the pair when nothing is stored', () => {
+  const noTts = { targetMode: 'pipeline', storedTtsModel: undefined, ttsModelSent: undefined, ttsConfigSent: undefined };
+  assert.throws(() => assertTtsPairForModeUpdate(noTts), /no TTS configuration is stored/);
+  assert.doesNotThrow(() => assertTtsPairForModeUpdate({ ...noTts, ttsModelSent: 'cartesia', ttsConfigSent: { voice_id: 'v1' } }));
+
+  // Stored config means a bare mode switch is fine — the stored pair is reused.
+  assert.doesNotThrow(() => assertTtsPairForModeUpdate({ ...noTts, storedTtsModel: 'sarvam' }));
+  // Re-sending the same provider without config keeps the stored pair.
+  assert.doesNotThrow(() => assertTtsPairForModeUpdate({
+    targetMode: 'pipeline', storedTtsModel: 'sarvam', ttsModelSent: 'sarvam', ttsConfigSent: undefined,
+  }));
+  // Changing provider without a config is refused — the stored config belongs to the old one.
+  assert.throws(() => assertTtsPairForModeUpdate({
+    targetMode: 'pipeline', storedTtsModel: 'sarvam', ttsModelSent: 'cartesia', ttsConfigSent: undefined,
+  }), /must accompany assistant_tts_model/);
+  assert.doesNotThrow(() => assertTtsPairForModeUpdate({ targetMode: 'realtime' }));
 });
 
 test('inferTargetModeForUpdate: llm_config alone never flips the mode', () => {

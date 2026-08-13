@@ -13,6 +13,11 @@ const {
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
   assertLlmModelAllowedInMode,
+  assertLlmVoiceAllowedForProvider,
+  assertSttModelIdAllowed,
+  assertTtsModelIdAllowed,
+  assertSarvamSpeakerAllowed,
+  assertTtsPairProvidedForMode,
 } = require('./assistant.rules');
 const {
   buildPipelineTtsConfig,
@@ -74,6 +79,7 @@ const createAssistant = async (data) => {
     modeExplicit: true
   });
   assertLlmModelAllowedInMode(mode, provider, assistant_llm_config?.model);
+  assertLlmVoiceAllowedForProvider(provider, assistant_llm_config?.voice);
   const interactionConfig = sanitizeInteractionConfigForMode(assistant_interaction_config, mode);
 
   // 3. Construct External Payload
@@ -87,6 +93,10 @@ const createAssistant = async (data) => {
 
   if (mode !== 'realtime') {
     assertSttModelAllowedInMode(mode, assistant_stt_model);
+    assertTtsPairProvidedForMode(mode, assistant_tts_model, assistant_tts_config);
+    assertSarvamSpeakerAllowed(assistant_tts_model, assistant_tts_config?.speaker);
+    assertSttModelIdAllowed(assistant_stt_model, assistant_stt_config?.model);
+    assertTtsModelIdAllowed(assistant_tts_model, assistant_tts_config?.model);
 
     const finalTtsConfig = await buildPipelineTtsConfig({
       userId: user._id,

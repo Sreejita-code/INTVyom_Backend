@@ -46,6 +46,7 @@ test.beforeEach(() => {
     tts_config: { speaker: 'anushka' },
     stt_model: 'sarvam',
     stt_config: { language: 'hi-IN' },
+    toObject() { return this; },
   };
 });
 
@@ -61,18 +62,18 @@ test('a name-only update sends just that field and no mode or pipeline config', 
 });
 
 test('a TTS config edit goes out as a model+config pair with the integrated key', async () => {
-  await updateAssistant('u1', 'ext-1', { assistant_tts_config: { speaker: 'maitreyi' } });
+  await updateAssistant('u1', 'ext-1', { assistant_tts_config: { speaker: 'shubh' } });
 
   assert.strictEqual(sent.patch.data.assistant_tts_model, 'sarvam');
   assert.deepStrictEqual(sent.patch.data.assistant_tts_config, {
-    speaker: 'maitreyi',
+    speaker: 'shubh',
     api_key: 'tts-sarvam-key',
   });
   // Mode was derived from the payload, so it is pushed and mirrored locally.
   assert.strictEqual(sent.patch.data.assistant_mode, 'pipeline');
   assert.strictEqual(sent.localUpdate.llm_mode, 'pipeline');
   // The resolved key is an upstream concern — never persisted locally.
-  assert.deepStrictEqual(sent.localUpdate.tts_config, { speaker: 'maitreyi' });
+  assert.deepStrictEqual(sent.localUpdate.tts_config, { speaker: 'shubh' });
 });
 
 test('switching to realtime strips the speech pipeline and requires an llm_config', async () => {
@@ -83,7 +84,7 @@ test('switching to realtime strips the speech pipeline and requires an llm_confi
 
   await updateAssistant('u1', 'ext-1', {
     assistant_mode: 'realtime',
-    assistant_llm_config: { model: 'gemini-2.0-flash' },
+    assistant_llm_config: { model: 'gemini-2.5-flash-native-audio-preview-12-2025' },
   });
 
   assert.strictEqual(sent.patch.data.assistant_mode, 'realtime');
@@ -92,7 +93,7 @@ test('switching to realtime strips the speech pipeline and requires an llm_confi
   assert.strictEqual(sent.patch.data.assistant_stt_model, undefined);
   assert.strictEqual(sent.patch.data.assistant_stt_config, undefined);
   assert.deepStrictEqual(sent.patch.data.assistant_llm_config, {
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash-native-audio-preview-12-2025',
     provider: 'gemini',
     api_key: 'llm-gemini-key',
   });
@@ -167,6 +168,84 @@ test('the retired assistant_llm_mode alias is rejected before any call', async (
     /retired/
   );
   assert.strictEqual(sent.patch, null);
+});
+
+test('a stored chat-model temperature blocks a model-only switch to a reasoning model', async () => {
+  // The docs' merged-row rule: a PATCH naming only `model` keeps the stored knobs, so the
+  // stored temperature must be validated against the new model. Before the key-by-key merge
+  // this passed local validation and failed upstream on every LLM turn.
+  storedAssistant.llm_mode = 'cascade';
+  storedAssistant.llm_config = { model: 'gpt-4.1', temperature: 0.7 };
+
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_llm_config: { model: 'gpt-5-mini' } }),
+    /temperature is not supported by model 'gpt-5-mini'/
+  );
+  assert.strictEqual(sent.patch, null);
+
+  // Clearing the knob in the same request is the documented way through.
+  await updateAssistant('u1', 'ext-1', {
+    assistant_llm_config: { model: 'gpt-5-mini', temperature: null },
+  });
+  assert.strictEqual(sent.patch.data.assistant_llm_config.model, 'gpt-5-mini');
+  assert.strictEqual(sent.patch.data.assistant_llm_config.temperature, null);
+});
+
+test('switching provider leaves a gemini voice behind — caught against the merged config', async () => {
+  storedAssistant.llm_mode = 'realtime';
+  storedAssistant.llm_provider = 'gemini';
+  storedAssistant.llm_config = { provider: 'gemini', model: 'gemini-2.5-flash-native-audio-preview-12-2025', voice: 'Puck' };
+
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', {
+      assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5' },
+    }),
+    /is a Gemini Live voice and is not accepted under provider 'openai'/
+  );
+  assert.strictEqual(sent.patch, null);
+
+  // Clearing the voice in the same request is the way through.
+  await updateAssistant('u1', 'ext-1', {
+    assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5', voice: null },
+  });
+  assert.strictEqual(sent.patch.data.assistant_llm_config.provider, 'openai');
+});
+
+test('a sarvam v2 speaker sent on update is refused before any call', async () => {
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', {
+      assistant_tts_config: { speaker: 'anushka' },
+    }),
+    /not available on bulbul:v3/
+  );
+  assert.strictEqual(sent.patch, null);
+});
+
+test('switching to pipeline with no stored TTS demands the pair', async () => {
+  storedAssistant.tts_model = undefined;
+  storedAssistant.tts_config = undefined;
+
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_mode: 'cascade' }),
+    /assistant_tts_model and assistant_tts_config are required/
+  );
+  assert.strictEqual(sent.patch, null);
+
+  // With the pair in the same request it goes through.
+  await updateAssistant('u1', 'ext-1', {
+    assistant_mode: 'cascade',
+    assistant_tts_model: 'sarvam',
+    assistant_tts_config: { speaker: 'shubh' },
+  });
+  assert.strictEqual(sent.patch.data.assistant_mode, 'cascade');
+});
+
+test('an unrelated rename on a legacy row without TTS stays editable', async () => {
+  storedAssistant.tts_model = undefined;
+  storedAssistant.tts_config = undefined;
+
+  await updateAssistant('u1', 'ext-1', { assistant_name: 'Renamed' });
+  assert.deepStrictEqual(sent.patch.data, { assistant_name: 'Renamed' });
 });
 
 test('false and null are mirrored locally; undefined is not', async () => {

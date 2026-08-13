@@ -15,32 +15,52 @@ const badRequest = (message) => {
 // body the proxy would have to unwrap. When upstream adds a model, add it here too.
 
 // Realtime model IDs — used by `pipeline` (text-only modality) and `realtime` + openai.
+// The `gpt-4o-*-realtime-preview` pair is deliberately NOT here: probed on 2026-08-13 the
+// account does not serve either, so storing one produced a session that could not connect.
 const OPENAI_REALTIME_MODELS = [
   'gpt-realtime',
   'gpt-realtime-1.5',
+  'gpt-realtime-2',
+  'gpt-realtime-2025-08-28',
   'gpt-realtime-mini',
-  'gpt-4o-realtime-preview',
-  'gpt-4o-mini-realtime-preview',
+];
+
+// Gemini Live model IDs ARE validated, against the installed plugin's own list. The Live API is
+// a much smaller and slower-moving set than the Gemini chat models, and a chat id such as
+// `gemini-2.5-flash` is not refused by the plugin — it opens a socket the API then closes.
+const GEMINI_LIVE_MODELS = [
+  'gemini-2.5-flash-native-audio-preview-12-2025',
+  'gemini-live-2.5-flash-native-audio',
+  'gemini-3.1-flash-live-preview',
+];
+
+// The 30 Gemini Live voices. Closed set in the installed plugin — a name outside it cannot work.
+// Mirrors the plugin's roster; verify against the upstream capabilities.py when it changes.
+const GEMINI_VOICES = [
+  'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede',
+  'Callirrhoe', 'Autonoe', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina',
+  'Erinome', 'Algenib', 'Rasalgethi', 'Laomedeia', 'Achernar', 'Alnilam', 'Schedar',
+  'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia',
+  'Sadaltager', 'Sulafat',
 ];
 
 // Plain chat models for the cascade LLM stage. Disjoint from the realtime set on purpose:
 // sending `gpt-4.1` in pipeline mode, or `gpt-realtime-1.5` in cascade, is a mistake either way.
+//
+// The `*-chat-latest` aliases were retired by OpenAI on 2026-06-19, and `chat-latest` (a LiveKit
+// Inference gateway id needing Cloud credentials) and `gpt-oss-120b` (served by baseten and groq,
+// not by `api.openai.com`) were never served by the API this stage talks to. All five are
+// deliberately NOT here — an assistant still holding one answers calls with silence.
 const OPENAI_CASCADE_MODELS = [
   'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
   'gpt-4o', 'gpt-4o-mini',
   'gpt-5', 'gpt-5-mini', 'gpt-5-nano',
-  'gpt-5.1', 'gpt-5.1-chat-latest',
-  'gpt-5.2', 'gpt-5.2-chat-latest',
-  'gpt-5.3-chat-latest',
+  'gpt-5.1',
+  'gpt-5.2',
   'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano',
   'gpt-5.5',
   'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
-  'chat-latest',
-  'gpt-oss-120b',
 ];
-
-// Gemini Live model IDs are deliberately NOT listed: Google ships new ones often and an
-// allowlist would reject them the day they land. Upstream leaves them free-form too.
 
 // STT providers per mode. `native` means "the realtime model transcribes itself", so it is
 // pipeline-only. The four plugin providers are cascade-native but are *accepted* in pipeline:
@@ -138,11 +158,24 @@ const assertSttModelAllowedInMode = (mode, sttModel) => {
 };
 
 // LLM model IDs are validated against a different list per mode, because each mode talks to a
-// different upstream API. Only OpenAI is checked — Gemini Live IDs stay free-form.
-// An unset model is always fine: upstream fills in its own per-mode default.
+// different upstream API. OpenAI is checked against the realtime/cascade split; Gemini Live IDs
+// are checked against the plugin's own Live list in `realtime` mode. An unset model is always
+// fine: upstream fills in its own per-mode default.
 const assertLlmModelAllowedInMode = (mode, provider, model) => {
   if (model === undefined || model === null || model === '') return;
-  if (String(provider).toLowerCase() !== 'openai') return;
+
+  const providerLower = String(provider).toLowerCase();
+
+  if (providerLower === 'gemini') {
+    if (GEMINI_LIVE_MODELS.includes(String(model))) return;
+    throw badRequest(
+      `assistant_llm_config.model '${model}' is not a Gemini Live model — expected one of: ` +
+      `${quotedList(GEMINI_LIVE_MODELS)}. A Gemini chat id such as 'gemini-2.5-flash' opens a ` +
+      'socket the API then closes'
+    );
+  }
+
+  if (providerLower !== 'openai') return;
 
   const allowed = mode === 'cascade' ? OPENAI_CASCADE_MODELS : OPENAI_REALTIME_MODELS;
   if (allowed.includes(String(model))) return;
@@ -154,6 +187,148 @@ const assertLlmModelAllowedInMode = (mode, provider, model) => {
     `assistant_llm_config.model '${model}' is not valid in ${mode} mode (${hint}). ` +
     `Expected one of: ${quotedList(allowed)}`
   );
+};
+
+// `assistant_llm_config.voice` is one field shared by two providers whose rosters have nothing in
+// common — the mistake it catches is switching provider and leaving the voice behind. Gemini's
+// roster is a closed set; OpenAI ships realtime voices without an SDK list, so any name that is
+// NOT a Gemini voice is allowed through.
+const assertLlmVoiceAllowedForProvider = (provider, voice) => {
+  if (voice === undefined || voice === null || voice === '') return;
+
+  const providerLower = String(provider || '').toLowerCase();
+  const voiceValue = String(voice);
+
+  if (providerLower === 'gemini' && !GEMINI_VOICES.includes(voiceValue)) {
+    throw badRequest(
+      `assistant_llm_config.voice '${voice}' is not a Gemini Live voice — the roster is a closed ` +
+      `set: ${quotedList(GEMINI_VOICES)}`
+    );
+  }
+
+  if (providerLower === 'openai' && GEMINI_VOICES.includes(voiceValue)) {
+    throw badRequest(
+      `assistant_llm_config.voice '${voice}' is a Gemini Live voice and is not accepted under ` +
+      "provider 'openai' — OpenAI realtime voices are anything that is not a Gemini name " +
+      "(e.g. 'marin', 'cedar', 'alloy')"
+    );
+  }
+};
+
+// Per-provider STT model ids. Mirrors the upstream speech model sets — a typo such as `nova-9`
+// used to be stored happily and then end the job at call start. Providers whose model is pinned
+// in the factory (none here) take no `model` field at all.
+const STT_MODELS_BY_PROVIDER = {
+  sarvam: ['saaras:v3', 'saaras:v2.5', 'saarika:v2.5'],
+  cartesia: ['ink-whisper', 'ink-2'],
+  deepgram: ['nova-3', 'nova-2', 'flux-general-en', 'flux-general-multi'],
+  elevenlabs: ['scribe_v2_realtime', 'scribe_v2', 'scribe_v1'],
+  openai: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'],
+};
+
+const assertSttModelIdAllowed = (provider, model) => {
+  if (model === undefined || model === null || model === '') return;
+
+  const providerLower = String(provider || '').toLowerCase();
+  const allowed = STT_MODELS_BY_PROVIDER[providerLower];
+  if (!allowed) return; // `native` / unknown provider — no model field exists
+
+  if (allowed.includes(String(model))) return;
+  throw badRequest(
+    `'${providerLower}' does not have a STT model called '${model}' — choose one of: ` +
+    `${quotedList(allowed)}. See docs/reference/models.md.`
+  );
+};
+
+// TTS model ids. Only ElevenLabs takes a `model` key; the other providers pin theirs in the
+// factory (Cartesia `sonic-3`, Sarvam `bulbul:v3`, Mistral `voxtral-mini-tts-2603`).
+const ELEVENLABS_TTS_MODELS = [
+  'eleven_v3',
+  'eleven_multilingual_v2',
+  'eleven_turbo_v2_5',
+  'eleven_flash_v2_5',
+];
+
+const assertTtsModelIdAllowed = (provider, model) => {
+  if (model === undefined || model === null || model === '') return;
+  if (String(provider || '').toLowerCase() !== 'elevenlabs') return;
+
+  if (ELEVENLABS_TTS_MODELS.includes(String(model))) return;
+  throw badRequest(
+    `'elevenlabs' does not have a TTS model called '${model}' — choose one of: ` +
+    `${quotedList(ELEVENLABS_TTS_MODELS)}`
+  );
+};
+
+// Sarvam `speaker` must come from the bulbul:v3 roster. The two Bulbul generations share no
+// speaker names, so every v2 name (`anushka`, `manisha`, `vidya`, `arya`, `abhilash`, `karun`,
+// `hitesh`) is invalid on the v3 model this platform pins. Unlike a bad language code, a bad
+// speaker is NOT substituted at call time — the call ends before it starts.
+const SARVAM_SPEAKERS = [
+  'aayan', 'aditya', 'advait', 'amelia', 'amit', 'ashutosh', 'dev', 'ishita', 'kabir',
+  'kavitha', 'kavya', 'manan', 'neha', 'pooja', 'priya', 'rahul', 'ratan', 'ritu', 'rohan',
+  'roopa', 'rupali', 'shreya', 'shruti', 'shubh', 'simran', 'sophia', 'suhani', 'sumit',
+  'tanya', 'varun',
+];
+
+const assertSarvamSpeakerAllowed = (ttsModel, speaker) => {
+  if (speaker === undefined || speaker === null || speaker === '') return;
+  if (String(ttsModel || '').toLowerCase() !== 'sarvam') return;
+
+  if (SARVAM_SPEAKERS.includes(String(speaker))) return;
+  throw badRequest(
+    `Sarvam speaker '${speaker}' is not available on bulbul:v3 — v2 and v3 share no speaker ` +
+    `names; bulbul:v3 speakers are: ${quotedList(SARVAM_SPEAKERS)}. Update ` +
+    'assistant_tts_config.speaker.'
+  );
+};
+
+// `assistant_llm_config.service_tier`. `auto`/`default`/`fast`/`priority` work on every model;
+// `flex` is gpt-5 generation only (rejected here against the family lists); `scale` is not an
+// OpenAI tier at all — it was removed from the accepted values and can never have worked.
+const SERVICE_TIERS = ['auto', 'default', 'fast', 'priority', 'flex'];
+const TOOL_CHOICES = ['auto', 'required', 'none'];
+
+// Create rule: pipeline and cascade have no realtime model to speak for them, so both halves of
+// the TTS pair are required. Realtime ignores TTS entirely.
+const assertTtsPairProvidedForMode = (mode, ttsModel, ttsConfig) => {
+  if (mode === 'realtime') return;
+
+  if (ttsModel === undefined || ttsModel === null || ttsModel === '') {
+    throw badRequest(
+      `assistant_tts_model is required in ${mode} mode — send it together with assistant_tts_config`
+    );
+  }
+  if (ttsConfig === undefined || ttsConfig === null) {
+    throw badRequest(
+      `assistant_tts_config is required in ${mode} mode — send it together with assistant_tts_model`
+    );
+  }
+};
+
+// Update rule: switching into pipeline/cascade needs the TTS pair only when the assistant has no
+// TTS config stored (a realtime-created assistant). Once stored, the config is preserved and
+// reused. Changing provider without a config is also refused — the stored config belongs to the
+// old provider and sending `{}` would fail upstream.
+const assertTtsPairForModeUpdate = ({ targetMode, storedTtsModel, ttsModelSent, ttsConfigSent }) => {
+  if (targetMode === 'realtime') return;
+
+  const modelSent = ttsModelSent !== undefined && ttsModelSent !== null && ttsModelSent !== '';
+  const configSent = ttsConfigSent !== undefined && ttsConfigSent !== null;
+  const hasStoredTts = storedTtsModel !== undefined && storedTtsModel !== null && storedTtsModel !== '';
+
+  if (!hasStoredTts && !modelSent) {
+    throw badRequest(
+      `assistant_tts_model and assistant_tts_config are required when moving to '${targetMode}' — ` +
+      'no TTS configuration is stored on this assistant'
+    );
+  }
+  if (modelSent && !configSent && storedTtsModel !== ttsModelSent) {
+    throw badRequest(
+      "assistant_tts_config must accompany assistant_tts_model when changing the TTS provider — " +
+      `the stored config belongs to '${storedTtsModel ?? 'none'}', not '${ttsModelSent}'`
+    );
+  }
 };
 
 // Which mode a PATCH targets. Only an explicit assistant_mode or the presence of TTS/STT
@@ -211,9 +386,22 @@ module.exports = {
   ASSISTANT_FIELDS,
   OPENAI_REALTIME_MODELS,
   OPENAI_CASCADE_MODELS,
+  GEMINI_LIVE_MODELS,
+  GEMINI_VOICES,
+  SERVICE_TIERS,
+  TOOL_CHOICES,
+  STT_MODELS_BY_PROVIDER,
+  ELEVENLABS_TTS_MODELS,
+  SARVAM_SPEAKERS,
   CASCADE_STT_MODELS,
   PIPELINE_STT_MODELS,
   assertLlmModelAllowedInMode,
+  assertLlmVoiceAllowedForProvider,
+  assertSttModelIdAllowed,
+  assertTtsModelIdAllowed,
+  assertSarvamSpeakerAllowed,
+  assertTtsPairProvidedForMode,
+  assertTtsPairForModeUpdate,
   rejectRetiredModeAlias,
   requestedModeFrom,
   pickAssistantFields,

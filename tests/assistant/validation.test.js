@@ -18,22 +18,60 @@ test('chat models reject reasoning_effort and accept temperature', () => {
   assert.strictEqual(cascade('gpt-4.1', { temperature: 0.7 }).isValid, true);
 });
 
-test('*-chat-latest is a chat model, not a reasoning one', () => {
-  // The prefix test this replaced matched these ids in BOTH families, so temperature and
-  // reasoning_effort were rejected together and neither knob could be configured.
-  for (const model of ['gpt-5.1-chat-latest', 'gpt-5.2-chat-latest', 'gpt-5.3-chat-latest', 'chat-latest']) {
-    assert.strictEqual(cascade(model, { temperature: 0.7 }).isValid, true, `${model} should take temperature`);
-    assert.strictEqual(cascade(model, { reasoning_effort: 'low' }).isValid, false, `${model} should refuse reasoning_effort`);
-    // Still the gpt-5 generation for verbosity.
-    assert.strictEqual(cascade(model, { verbosity: 'low' }).isValid, true, `${model} should take verbosity`);
+test('the retired *-chat-latest aliases, chat-latest and gpt-oss-120b are off the cascade allowlist', () => {
+  // Retired by OpenAI on 2026-06-19 (aliases) or never served by api.openai.com (the other two).
+  // A stored row holding one answers calls with silence; new writes are rejected outright.
+  for (const model of ['gpt-5.1-chat-latest', 'gpt-5.2-chat-latest', 'gpt-5.3-chat-latest', 'chat-latest', 'gpt-oss-120b']) {
+    assert.strictEqual(cascade(model, { temperature: 0.7 }).isValid, false, `${model} should be rejected`);
+    assert.strictEqual(cascade(model, { reasoning_effort: 'low' }).isValid, false, `${model} should be rejected`);
   }
 });
 
-test('verbosity is allowlisted to the gpt-5 generation', () => {
-  assert.strictEqual(cascade('gpt-5', { verbosity: 'low' }).isValid, true);
-  assert.strictEqual(cascade('gpt-4o', { verbosity: 'low' }).isValid, false);
-  // The old denylist named only gpt-4.1*/gpt-4o*, so this one slipped through.
-  assert.strictEqual(cascade('gpt-oss-120b', { verbosity: 'low' }).isValid, false);
+test('service_tier: scale is rejected everywhere, flex is gpt-5 generation only', () => {
+  assert.strictEqual(cascade('gpt-4.1', { service_tier: 'scale' }).isValid, false);
+  assert.match(cascade('gpt-4.1', { service_tier: 'scale' }).message, /not an OpenAI tier/);
+  // flex on a chat model is the config that produced the silent calls.
+  assert.strictEqual(cascade('gpt-4.1', { service_tier: 'flex' }).isValid, false);
+  assert.match(cascade('gpt-4.1', { service_tier: 'flex' }).message, /gpt-5 generation/);
+  // flex on a reasoning model is fine.
+  assert.strictEqual(cascade('gpt-5-mini', { service_tier: 'flex' }).isValid, true);
+  // the everyday tiers work on both families.
+  for (const tier of ['auto', 'default', 'fast', 'priority']) {
+    assert.strictEqual(cascade('gpt-4.1', { service_tier: tier }).isValid, true);
+    assert.strictEqual(cascade('gpt-5-mini', { service_tier: tier }).isValid, true);
+  }
+});
+
+test('tool_choice: only auto/required/none, and "required" needs a tool', () => {
+  assert.strictEqual(cascade('gpt-4.1', { tool_choice: 'auto' }).isValid, true);
+  assert.strictEqual(cascade('gpt-4.1', { tool_choice: 'nonsense' }).isValid, false);
+  // no tools attached: forced choice is refused — OpenAI rejects it on every turn.
+  assert.strictEqual(cascade('gpt-4.1', { tool_choice: 'required' }).isValid, false);
+  assert.match(cascade('gpt-4.1', { tool_choice: 'required' }).message, /needs at least one tool/);
+  // tool_ids inside the parameters count (direct-call back-compat)...
+  assert.strictEqual(cascade('gpt-4.1', { tool_choice: 'required', tool_ids: ['t1'] }).isValid, true);
+  // ...and so does the top-level end-call tool passed as hasTools.
+  assert.strictEqual(
+    validateModelParameters('cascade', 'openai', 'gpt-4.1', { model: 'gpt-4.1', tool_choice: 'required' }, true).isValid,
+    true
+  );
+  assert.strictEqual(
+    validateModelParameters('cascade', 'openai', 'gpt-4.1', { model: 'gpt-4.1', tool_choice: 'required' }, false).isValid,
+    false
+  );
+});
+
+test('gpt-5.2 with tools is refused via the top-level end-call flag, not only inline tool_ids', () => {
+  // The real payload carries assistant_end_call_enabled at the top level, never inside
+  // assistant_llm_config — the hasTools flag must come from there.
+  assert.strictEqual(
+    validateModelParameters('cascade', 'openai', 'gpt-5.2', { model: 'gpt-5.2', reasoning_effort: 'low' }, true).isValid,
+    false
+  );
+  assert.strictEqual(
+    validateModelParameters('cascade', 'openai', 'gpt-5.2', { model: 'gpt-5.2', reasoning_effort: 'low' }, false).isValid,
+    true
+  );
 });
 
 test('gpt-5.2 and gpt-5.4* refuse reasoning_effort only once tools are attached', () => {

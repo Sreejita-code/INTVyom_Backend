@@ -143,13 +143,19 @@ Mode-aware fields for create/update:
 - `assistant_mode`: `pipeline` (default), `realtime`, or `cascade`.
 - `assistant_llm_config`: LLM config object. Forwarded in **all** modes. `provider` is `openai`
   in pipeline and cascade, `gemini` or `openai` in realtime. `model` is validated against a
-  per-mode allowlist. Cascade adds seven generation knobs (`temperature`, `max_output_tokens`,
+  per-mode allowlist (Gemini Live IDs and voices are closed lists too). Cascade adds seven
+  generation knobs (`temperature`, `max_output_tokens`,
   `reasoning_effort`, `service_tier`, `verbosity`, `tool_choice`, `parallel_tool_calls`) —
   accepted in every mode, read only in cascade.
 - `assistant_tts_model` and `assistant_tts_config`: TTS fields (used when mode is `pipeline` or
-  `cascade`).
+  `cascade`). `sarvam` takes `assistant_tts_config.speaker` from the 30-name `bulbul:v3` roster
+  (the v2 names are rejected); `elevenlabs` takes `assistant_tts_config.model` from
+  `eleven_v3` / `eleven_multilingual_v2` / `eleven_turbo_v2_5` / `eleven_flash_v2_5`.
 - `assistant_stt_model` and `assistant_stt_config`: STT fields. `sarvam` (default), `native`,
-  `cartesia`, `deepgram`, `elevenlabs` or `openai`. `native` is pipeline-only and rejected in
+  `cartesia`, `deepgram`, `elevenlabs` or `openai`. The `assistant_stt_config.model` id is
+  validated per provider (`saaras:v3`/`saarika:v2.5`, `ink-whisper`/`ink-2`, `nova-3`/`nova-2`/
+  `flux-general-en`/`flux-general-multi`, `scribe_v2_realtime`/`scribe_v2`/`scribe_v1`,
+  `gpt-4o-mini-transcribe`/`gpt-4o-transcribe`/`whisper-1`). `native` is pipeline-only and rejected in
   cascade; the four plugin providers run for real in cascade and are stored-but-inert in
   pipeline (the call falls back to native transcription). Ignored in realtime.
 
@@ -177,10 +183,18 @@ Language fields, three of them, easy to confuse — and each in a different code
 Update semantics (mirrors the external API's validation rules):
 - Mode only changes on an explicit `assistant_mode`, or when TTS/STT fields are present.
   Sending `assistant_llm_config` on its own is legal in pipeline mode (rotate `api_key`, change
-  `model`) and leaves the stored TTS/STT config alone.
+  `model`) and leaves the stored TTS/STT config alone. `assistant_llm_config` merges
+  **key-by-key** with the stored config (a PATCH naming only `model` keeps the stored provider,
+  `api_key` and knobs) — so a stored `temperature` on a chat model blocks a model-only switch
+  to a reasoning model, and a stored Gemini `voice` blocks a provider-only switch to `openai`,
+  until the stale key is cleared (`null`) in the same request.
 - TTS goes out as a `model` + `config` pair; either half is enough, the other is filled in from
   the stored assistant. Switching TTS/STT provider without a new config resets to that
-  provider's defaults rather than carrying the old provider's fields over.
+  provider's defaults rather than carrying the old provider's fields over. Switching to a
+  speech mode when **nothing** is stored demands both halves in the same request; an unrelated
+  edit on such a legacy row still works.
+- TTS/STT model ids and Sarvam speakers are validated only against request values (never the
+  stored row), so a legacy row stored on a retired id stays editable.
 - Switching to `cascade`: STT must not be `native` (send one of the five plugin providers in the
   same request) and `assistant_llm_config.provider` must be `openai` or omitted.
 - Mode switches are validated against the **stored** assistant, not just the request, so a
@@ -243,29 +257,39 @@ Other behavior:
 ### Models & Providers (reference)
 
 The allowlists live in `src/assistant/assistant.rules.js` (`OPENAI_REALTIME_MODELS`,
-`OPENAI_CASCADE_MODELS`, `CASCADE_STT_MODELS`). They mirror the external API's own validators so
-a bad model fails here with a readable `400` listing the valid values. When upstream adds a
-model, add it there and here.
+`OPENAI_CASCADE_MODELS`, `GEMINI_LIVE_MODELS`, `CASCADE_STT_MODELS`, `STT_MODELS_BY_PROVIDER`,
+`ELEVENLABS_TTS_MODELS`, `SARVAM_SPEAKERS`). They mirror the external API's own validators so a
+bad model fails here with a readable `400` listing the valid values. When upstream adds a model,
+add it there and here.
 
 Realtime LLM (`pipeline`, `realtime`) — `provider`: `gemini` (realtime default) / `openai`
 (pipeline, and the only option there); `voice`: `Puck` / `marin`, honored in realtime only.
-OpenAI `model` is one of `gpt-realtime`, `gpt-realtime-1.5` (default), `gpt-realtime-mini`,
-`gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`. Gemini model IDs are deliberately
-free-form (default `gemini-3.1-flash-live-preview`) — Google ships new Live models faster than
-an allowlist can track.
+OpenAI `model` is one of `gpt-realtime`, `gpt-realtime-1.5` (default), `gpt-realtime-2`,
+`gpt-realtime-2025-08-28`, `gpt-realtime-mini`. The retired preview pair
+(`gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`) is rejected — those accounts opened
+a session that could never connect. Gemini `model` is one of `gemini-2.5-flash-native-audio-preview-12-2025`
+(upstream default; the starter template pins `gemini-3.1-flash-live-preview`),
+`gemini-live-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview` — a non-Live Gemini ID
+(e.g. `gemini-2.5-flash`) is a `400`: it opens a socket the API then closes. Gemini `voice` is
+a closed 30-name roster (the SDK's `gemini_tts.py` list; `Puck` default) — anything else is a
+`400`; OpenAI `voice` accepts any name that is not a Gemini voice (the catch: a Gemini voice
+under `openai` is the exact mistake this blocks).
 
 Cascade LLM — `provider` `openai` only; `model` validated (default `gpt-4.1`): `gpt-4.1`,
 `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`,
-`gpt-5.1`, `gpt-5.1-chat-latest`, `gpt-5.2`, `gpt-5.2-chat-latest`, `gpt-5.3-chat-latest`,
-`gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`,
-`gpt-5.6-luna`, `chat-latest`, `gpt-oss-120b`. The realtime and cascade sets are **disjoint**:
-sending `gpt-4.1` in pipeline mode, or `gpt-realtime-1.5` in cascade, is a `400` either way.
+`gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`. The realtime and cascade sets are **disjoint**: sending
+`gpt-4.1` in pipeline mode, or `gpt-realtime-1.5` in cascade, is a `400` either way.
 
 Generation knobs (cascade only, all optional): `temperature` (0–2), `max_output_tokens`,
-`reasoning_effort` (`none`…`max`), `service_tier` (`auto`/`default`/`flex`/`scale`/`priority`),
-`verbosity` (`low`/`medium`/`high`), `tool_choice` (`auto`/`required`/`none`),
-`parallel_tool_calls`. Reasoning models (`gpt-5`, `gpt-5.x`) **ignore `temperature`** — send
-`reasoning_effort` instead; non-reasoning models are the reverse.
+`reasoning_effort` (`none`…`max`), `service_tier` (`auto`/`default`/`fast`/`flex`/`priority`;
+`flex` only on the gpt-5 generation), `verbosity` (`low`/`medium`/`high`), `tool_choice`
+(`auto`/`required`/`none`; `required` needs a tool attached — see `tool_ids` /
+`assistant_end_call_enabled`), `parallel_tool_calls`. Reasoning models (`gpt-5`, `gpt-5.x`)
+**ignore `temperature`** — send `reasoning_effort` instead; non-reasoning models are the
+reverse. The knob checks run against the merged stored+request LLM config, so a `temperature`
+stored on a chat model blocks a later model-only switch to a reasoning model until it is
+cleared (`temperature: null`) in the same request.
 
 STT — five plugin providers plus `native`:
 

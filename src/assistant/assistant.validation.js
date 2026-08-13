@@ -7,7 +7,10 @@ const {
   OPENAI_REALTIME_MODELS, 
   OPENAI_CASCADE_MODELS, 
   CASCADE_STT_MODELS, 
-  PIPELINE_STT_MODELS 
+  PIPELINE_STT_MODELS,
+  GEMINI_LIVE_MODELS,
+  SERVICE_TIERS,
+  TOOL_CHOICES,
 } = require('./assistant.rules');
 
 // Language code standards by provider
@@ -42,24 +45,18 @@ const REASONING_MODELS = [
   'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'
 ];
 
-// Non-reasoning chat models: `temperature` yes, `reasoning_effort` no. The '*-chat-latest'
-// aliases track a gpt-5.x *chat* snapshot, so they belong here — but they are still the
-// gpt-5 generation for `verbosity` (see GPT5_GENERATION). gpt-oss-120b is the open-weight
-// model, served off-platform, so it gets the conservative knob set.
+// Non-reasoning chat models: `temperature` yes, `reasoning_effort` no. The retired
+// `*-chat-latest` aliases, `chat-latest` and `gpt-oss-120b` are NOT here: they are off the
+// cascade allowlist (retired 2026-06-19 / never served by api.openai.com), and a model outside
+// the allowlist has no known family, so its knobs are forwarded untouched rather than guessed at.
 const CHAT_MODELS = [
   'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
   'gpt-4o', 'gpt-4o-mini',
-  'gpt-5.1-chat-latest', 'gpt-5.2-chat-latest', 'gpt-5.3-chat-latest',
-  'chat-latest', 'gpt-oss-120b'
 ];
 
-// `verbosity` (`text.verbosity`) is a gpt-5 generation parameter, which includes that
-// generation's chat aliases. Stated as an allowlist, not a denylist of gpt-4 ids: a
-// denylist silently accepted verbosity on gpt-oss-120b, which does not read it.
-const GPT5_GENERATION = [
-  ...REASONING_MODELS,
-  'gpt-5.1-chat-latest', 'gpt-5.2-chat-latest', 'gpt-5.3-chat-latest', 'chat-latest'
-];
+// `verbosity` (`text.verbosity`) is a gpt-5 generation parameter. With the retired chat aliases
+// gone from the allowlist, the gpt-5 generation is exactly the reasoning family.
+const GPT5_GENERATION = [...REASONING_MODELS];
 
 // Reasoning models that reject `reasoning_effort` once function tools are attached.
 const REASONING_TOOL_INCOMPATIBLE = ['gpt-5.2', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano'];
@@ -147,8 +144,8 @@ const COMPATIBILITY_MATRIX = {
       providers: ['gemini', 'openai'],
       restrictions: {
         gemini: {
-          models: 'Any Gemini Live model (not validated)',
-          notes: 'Default model: gemini-3.1-flash-live-preview'
+          models: GEMINI_LIVE_MODELS,
+          notes: 'Validated against the plugin Live list; default model: gemini-2.5-flash-native-audio-preview-12-2025'
         },
         openai: {
           models: OPENAI_REALTIME_MODELS,
@@ -299,13 +296,55 @@ const validateProviderCombination = (mode, llmProvider, sttProvider, ttsProvider
  * @param {string} provider - The provider
  * @param {string} model - The model ID
  * @param {object} parameters - Model parameters
+ * @param {boolean} [hasTools] - Whether the assistant carries tools (tool_ids or end_call tool).
+ *   Defaults to reading tool_ids/assistant_end_call_enabled from `parameters` for back-compat
+ *   with the direct-call tests; the config flow passes the top-level flag.
  * @returns {object} Validation result with isValid flag and message
  */
-const validateModelParameters = (mode, provider, model, parameters = {}) => {
-  if (provider !== 'openai' || !model) {
+const validateModelParameters = (mode, provider, model, parameters = {}, hasTools) => {
+  if (provider !== 'openai') {
     return { isValid: true, message: 'No parameter validation needed' };
   }
-  
+
+  const tools = hasTools !== undefined
+    ? hasTools
+    : Boolean(parameters.tool_ids || parameters.assistant_end_call_enabled);
+
+  // Value-level checks that need no model family. A `scale` tier, or a forced tool choice with
+  // an empty tool list, is refused on every model OpenAI serves — reject at save time instead.
+  if (parameters.service_tier !== undefined && parameters.service_tier !== null) {
+    const tier = String(parameters.service_tier).toLowerCase();
+    if (!SERVICE_TIERS.includes(tier)) {
+      return {
+        isValid: false,
+        message: `assistant_llm_config.service_tier '${parameters.service_tier}' is not an OpenAI ` +
+                 `tier — expected one of: ${SERVICE_TIERS.join(', ')}. 'scale' was removed from ` +
+                 'the API and can never have worked.'
+      };
+    }
+  }
+
+  if (parameters.tool_choice !== undefined && parameters.tool_choice !== null) {
+    const choice = String(parameters.tool_choice).toLowerCase();
+    if (!TOOL_CHOICES.includes(choice)) {
+      return {
+        isValid: false,
+        message: `assistant_llm_config.tool_choice must be one of: ${TOOL_CHOICES.join(', ')}`
+      };
+    }
+    if (choice === 'required' && !tools) {
+      return {
+        isValid: false,
+        message: "assistant_llm_config.tool_choice 'required' needs at least one tool — " +
+                 "attach a tool or set assistant_end_call_enabled: true, or use 'auto'"
+      };
+    }
+  }
+
+  if (!model) {
+    return { isValid: true, message: 'No model-level validation needed' };
+  }
+
   // Validate model is allowed for the mode
   let allowedModels;
   if (mode === 'cascade') {
@@ -324,17 +363,29 @@ const validateModelParameters = (mode, provider, model, parameters = {}) => {
                `Expected one of: ${allowedModels.join(', ')}`
     };
   }
-  
+
+  // `flex` is gpt-5 generation only — on a chat model OpenAI refuses it on every turn, and on
+  // some models does not even name the parameter, which is how an assistant ends up in silence.
+  if (parameters.service_tier !== undefined && parameters.service_tier !== null) {
+    const tier = String(parameters.service_tier).toLowerCase();
+    if (tier === 'flex' && !GPT5_GENERATION.includes(model)) {
+      return {
+        isValid: false,
+        message: `assistant_llm_config.service_tier 'flex' is not supported by model '${model}' — ` +
+                 `flex is a gpt-5 generation tier. Use 'auto', 'default', 'fast' or 'priority' ` +
+                 'instead, or leave it unset.'
+      };
+    }
+  }
+
   // Check each model-gated knob against the family table. A knob the model does not read is
   // not ignored by OpenAI: it answers 400 on every LLM turn, so the call connects and the
   // assistant never speaks. Rejecting here means the operator finds out at save time.
-  const hasTools = Boolean(parameters.tool_ids || parameters.assistant_end_call_enabled);
-
   for (const knob of ['temperature', 'reasoning_effort', 'verbosity']) {
     if (parameters[knob] === undefined || parameters[knob] === null) {
       continue;
     }
-    const reason = unsupportedKnobReason(model, knob, hasTools);
+    const reason = unsupportedKnobReason(model, knob, tools);
     if (reason) {
       return {
         isValid: false,
@@ -492,13 +543,19 @@ const validateAssistantConfiguration = (config) => {
       suggestions: getSuggestedAlternatives(mode, llmProvider, sttProvider, ttsProvider)
     };
   }
-  
+
+  // An assistant "has tools" when it has tool_ids or the built-in end-call tool. tool_ids are
+  // attached separately from the assistant payload, so in this flow the end-call flag is the
+  // only in-payload signal.
+  const hasTools = Boolean(config.assistant_end_call_enabled || assistant_llm_config.tool_ids);
+
   // Validate model parameters
   const modelValidation = validateModelParameters(
     mode, 
     llmProvider, 
     assistant_llm_config.model, 
-    assistant_llm_config
+    assistant_llm_config,
+    hasTools
   );
   if (!modelValidation.isValid) {
     return {

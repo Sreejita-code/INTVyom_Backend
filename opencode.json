@@ -25,5 +25,12 @@
         }
       }
     }
+  },
+  "mcp": {
+    "api-livekit-docs": {
+      "type": "remote",
+      "url": "https://api-livekit-vyom.indusnettechnologies.com/mcp",
+      "enabled": true
+    }
   }
 }
