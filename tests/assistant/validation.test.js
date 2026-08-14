@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const {
   validateModelParameters,
   unsupportedKnobReason,
+  validateAssistantConfiguration,
 } = require('../../src/assistant/assistant.validation');
 
 const cascade = (model, parameters) => validateModelParameters('cascade', 'openai', model, { model, ...parameters });
@@ -95,4 +96,34 @@ test('a null knob is not a set knob', () => {
 test('an unknown model is never guessed at', () => {
   assert.strictEqual(unsupportedKnobReason('gpt-9-turbo', 'temperature'), null);
   assert.strictEqual(unsupportedKnobReason('gpt-9-turbo', 'verbosity'), null);
+});
+
+test('an explicitly null config is nothing to validate, not a crash', () => {
+  // Realtime drops the speech pipeline by sending null for both halves; a null llm_config is
+  // the same story. Destructuring defaults only cover undefined, so these used to 500.
+  const realtime = {
+    assistant_mode: 'realtime',
+    assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5' },
+    assistant_stt_model: null,
+    assistant_stt_config: null,
+    assistant_tts_model: null,
+    assistant_tts_config: null,
+  };
+
+  assert.strictEqual(validateAssistantConfiguration(realtime).isValid, true);
+  assert.strictEqual(
+    validateAssistantConfiguration({ ...realtime, assistant_llm_config: null }).isValid,
+    true
+  );
+});
+
+test('a language code inside a present config is still validated', () => {
+  const result = validateAssistantConfiguration({
+    assistant_mode: 'pipeline',
+    assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5' },
+    assistant_stt_model: 'sarvam',
+    assistant_stt_config: { language: 'not-a-code' },
+  });
+
+  assert.strictEqual(result.isValid, false);
 });

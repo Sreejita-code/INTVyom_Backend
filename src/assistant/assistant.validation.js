@@ -520,15 +520,19 @@ const getSuggestedAlternatives = (mode, llmProvider, sttProvider, ttsProvider) =
  * @returns {object} Validation result with isValid flag, message, and suggestions
  */
 const validateAssistantConfiguration = (config) => {
-  const { 
-    assistant_mode, 
-    assistant_llm_config = {}, 
-    assistant_stt_model, 
+  const {
+    assistant_mode,
+    assistant_stt_model,
     assistant_tts_model,
-    assistant_stt_config = {},
-    assistant_tts_config = {}
   } = config;
-  
+
+  // `?? {}`, not a destructuring default: a client clearing a config sends an explicit `null`
+  // (realtime drops the speech pipeline that way), and a default only fires for `undefined`.
+  // Reading `.language` off that null was a 500 where the answer is "nothing to validate".
+  const assistant_llm_config = config.assistant_llm_config ?? {};
+  const assistant_stt_config = config.assistant_stt_config ?? {};
+  const assistant_tts_config = config.assistant_tts_config ?? {};
+
   const mode = assistant_mode || 'pipeline';
   const llmProvider = assistant_llm_config.provider || (mode === 'realtime' ? 'gemini' : 'openai');
   const sttProvider = assistant_stt_model;
