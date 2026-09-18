@@ -15,6 +15,7 @@ const inboundContextStrategyRoutes = require('./api/routes/inbound-context-strat
 const analyticsRoutes = require('./api/routes/analytics.routes');
 const passthroughRoutes = require('./api/routes/passthrough.routes');
 const audioRoutes = require('./api/routes/audio.routes');
+const meetingRoutes = require('./api/routes/meeting.routes');
 const errorHandler = require('./core/middleware/errorHandler');
 const notFound = require('./core/middleware/notFound');
 
@@ -47,6 +48,7 @@ const createApp = () => {
   app.use('/api/analytics', analyticsRoutes);
   app.use('/api/passthrough-call', passthroughRoutes);
   app.use('/api/audio', audioRoutes);
+  app.use('/api/meeting-call', meetingRoutes);
 
   // 404 + central error handling — one response shape for every failure.
   app.use(notFound);
