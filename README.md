@@ -114,27 +114,62 @@ All routes are mounted under:
 /api
 ```
 
-## API Endpoints
+## Swagger MCP server
 
-Most endpoints require `user_id` in either query params or request body.
+The backend serves its own API contract over MCP at `/mcp` (Streamable HTTP), so the frontend agent
+can query it instead of hand-copying from `swagger.yaml`. It is stateless and read-only: it
+describes the API and never calls it, touches MongoDB or holds credentials. It is unauthenticated,
+the same as the public `/api-docs`.
+
+Point the frontend repo's `.mcp.json` at it:
+
+```json
+{ "mcpServers": { "intvyom-swagger": { "type": "http", "url": "http://localhost:3000/mcp" } } }
+```
+
+Four tools:
+
+- `list_endpoints` — every endpoint, optionally filtered by `tag`
+- `search_endpoints` — find endpoints by path, summary, description, tag or field name
+- `get_endpoint` — the full resolved contract for one endpoint, plus a ready-to-send example body
+- `get_schema` — one shared schema from `components.schemas`, resolved, with an example
+
+**Trap:** the server reads `swagger.yaml` once at process start, so a swagger edit needs a backend
+restart before the frontend agent sees it. It also serves that content verbatim — if the YAML is
+stale, the agent is confidently stale too.
+
+## Authentication
+
+**Breaking change (2026-09-22): every endpoint now requires a bearer key.** All routes except
+`POST /api/auth/signup` and `POST /api/auth/login` require the user's upstream LiveKit key in an
+`Authorization: Bearer <api_key>` header; a missing or unknown key is a `401`. Obtain the key from
+signup or login. Identity comes from that key — a `user_id` in the body or query string is ignored,
+and no longer selects the tenant.
+
+Clients on the old unauthenticated path (`user_id` in the payload, no header) receive `401` until
+they send the header. A user whose `api_key` is `null` (upstream issuance failed at signup) cannot
+authenticate at all and now gets `401` instead of the old `400`.
+
+## API Endpoints
 
 ### Auth (`/api/auth`)
 
-- `POST /signup` - Register user and attempt external key creation.
-- `GET /get_api?user_name=...` - Fetch stored API key by username.
-- `POST /login` - Login with `user_name` and `password`.
+- `POST /signup` - Register user and attempt external key creation. Returns the `api_key`.
+- `POST /login` - Login with `user_name` and `password`. Returns the `api_key`.
+- `GET /get_api` - **Removed.** It returned the tenant's upstream key to anyone who knew a
+  username; use `POST /login` instead.
 
 ### Assistant (`/api/assistant`)
 
 - `POST /create` - Create assistant.
-- `GET /list?user_id=...` - List assistants. Optional: `page`, `limit` (defaults to 100 here,
+- `GET /list` - List assistants. Optional: `page`, `limit` (defaults to 100 here,
   not the external API's 10, because existing clients expect the whole list in one call),
   `assistant_name` (case-insensitive partial match), `start_date`, `end_date`, `sort_by`,
   `sort_order`.
-- `GET /details/:id?user_id=...` - Assistant details.
-- `PATCH /update/:id` - Update assistant (`user_id` in body).
-- `DELETE /delete/:id` - Delete assistant (`user_id` in query/body).
-- `GET /call-logs/:id?user_id=...` - Assistant call logs.
+- `GET /details/:id` - Assistant details.
+- `PATCH /update/:id` - Update assistant.
+- `DELETE /delete/:id` - Delete assistant.
+- `GET /call-logs/:id` - Assistant call logs.
 
 Additional fields for create/update:
 - `assistant_greeting_audio`: Object `{ "enabled": bool, "audio_id": string }`. When enabled and `interaction_config.speaks_first=true`, plays the prerecorded clip instead of a model-generated greeting.
@@ -150,11 +185,13 @@ Mode-aware fields for create/update:
 - `assistant_tts_model` and `assistant_tts_config`: TTS fields (used when mode is `pipeline` or
   `cascade`). `sarvam` takes `assistant_tts_config.speaker` from the 30-name `bulbul:v3` roster
   (the v2 names are rejected); `elevenlabs` takes `assistant_tts_config.model` from
-  `eleven_v3` / `eleven_multilingual_v2` / `eleven_turbo_v2_5` / `eleven_flash_v2_5`.
+  `eleven_v3` / `eleven_v3_conversational` / `eleven_multilingual_v2` / `eleven_turbo_v2_5` /
+  `eleven_flash_v2_5` (neither v3 model reads `voice_settings.speed`).
 - `assistant_stt_model` and `assistant_stt_config`: STT fields. `sarvam` (default), `native`,
   `cartesia`, `deepgram`, `elevenlabs` or `openai`. The `assistant_stt_config.model` id is
-  validated per provider (`saaras:v3`/`saarika:v2.5`, `ink-whisper`/`ink-2`, `nova-3`/`nova-2`/
-  `flux-general-en`/`flux-general-multi`, `scribe_v2_realtime`/`scribe_v2`/`scribe_v1`,
+  validated per provider (`saaras:v3`/`saaras:v4`, `ink-whisper`/`ink-2`, `nova-3`/`nova-3-general`/
+  `nova-3-multilingual`/`flux-general-en`/`flux-general-multi`,
+  `scribe_v2_realtime`/`scribe_v2`/`scribe_v1`,
   `gpt-4o-mini-transcribe`/`gpt-4o-transcribe`/`whisper-1`). `native` is pipeline-only and rejected in
   cascade; the four plugin providers run for real in cascade and are stored-but-inert in
   pipeline (the call falls back to native transcription). Ignored in realtime.
@@ -262,15 +299,22 @@ The allowlists live in `src/assistant/assistant.rules.js` (`OPENAI_REALTIME_MODE
 bad model fails here with a readable `400` listing the valid values. When upstream adds a model,
 add it there and here.
 
+Refreshed 2026-09-22 — three traps worth remembering: `saaras:v4` and `nova-3-multilingual` are
+new while `saaras:v2.5`, `saarika:v2.5` and `nova-2` are gone (upstream rejects all three);
+`gemini-3.8-live` is now the Gemini default and `gemini-live-2.5-flash-native-audio` is Vertex-only
+and rejected; Sarvam TTS takes `en-IN`, never `en-US`.
+
 Realtime LLM (`pipeline`, `realtime`) — `provider`: `gemini` (realtime default) / `openai`
 (pipeline, and the only option there); `voice`: `Puck` / `marin`, honored in realtime only.
 OpenAI `model` is one of `gpt-realtime`, `gpt-realtime-1.5` (default), `gpt-realtime-2`,
 `gpt-realtime-2025-08-28`, `gpt-realtime-mini`. The retired preview pair
 (`gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`) is rejected — those accounts opened
-a session that could never connect. Gemini `model` is one of `gemini-2.5-flash-native-audio-preview-12-2025`
-(upstream default; the starter template pins `gemini-3.1-flash-live-preview`),
-`gemini-live-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview` — a non-Live Gemini ID
-(e.g. `gemini-2.5-flash`) is a `400`: it opens a socket the API then closes. Gemini `voice` is
+a session that could never connect. Gemini `model` is one of `gemini-3.8-live` (upstream default,
+and what the starter template pins), `gemini-3.8-live-extended-thinking`,
+`gemini-3.1-flash-live-preview`, `gemini-2.5-flash-native-audio-preview-12-2025` — a non-Live
+Gemini ID (e.g. `gemini-2.5-flash`) is a `400`: it opens a socket the API then closes. The plugin
+also lists `gemini-live-2.5-flash-native-audio`, but it is the Vertex AI id and is rejected with a
+`422`. Gemini `voice` is
 a closed 30-name roster (the SDK's `gemini_tts.py` list; `Puck` default) — anything else is a
 `400`; OpenAI `voice` accepts any name that is not a Gemini voice (the catch: a Gemini voice
 under `openai` is the exact mistake this blocks).
@@ -295,9 +339,9 @@ STT — five plugin providers plus `native`:
 
 | Provider | Model default | Notable config |
 |---|---|---|
-| `sarvam` | `saaras:v3` (also `saaras:v2.5`, `saarika:v2.5`) | `language` `unknown` auto-detects (24 `-IN` codes); `mode` `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`), honored in pipeline **and** cascade |
+| `sarvam` | `saaras:v3` (also `saaras:v4`) | `language` `unknown` auto-detects (24 `-IN` codes); `mode` `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`), honored in pipeline **and** cascade |
 | `cartesia` | `ink-whisper` (43 languages) / `ink-2` (English only) | fixed `language`, no auto-detect |
-| `deepgram` | `nova-3` (45 languages) / `nova-2` / `flux-general-en` / `flux-general-multi` | `language` (BCP-47 or `multi`), `enable_diarization` (nova only), `keyterm` (`nova-3`/`flux` only) |
+| `deepgram` | `nova-3` (45 languages) / `nova-3-general` / `nova-3-multilingual` / `flux-general-en` / `flux-general-multi` | `language` (BCP-47 or `multi`), `enable_diarization` (nova only), `keyterm` (`nova-3`/`flux` only) |
 | `elevenlabs` | `scribe_v2_realtime` (~190 languages) / `scribe_v2` / `scribe_v1` | `language_code` — **ISO 639-3** (`hin`), setting it disables auto-detect; `no_verbatim` |
 | `openai` | `gpt-4o-mini-transcribe` / `gpt-4o-transcribe` / `whisper-1` | `detect_language`, `language`, `prompt` (`whisper-1` only), `noise_reduction_type`, `use_realtime` (default `true`) |
 | `native` | pipeline only — the realtime LLM transcribes itself | no config |
@@ -313,7 +357,8 @@ ISO 639-3 only, and a BCP-47 code does not degrade — Scribe closes the socket 
 `1008 invalid_request` on the first utterance and the call transcribes nothing.
 
 TTS — the synthesis model is fixed per provider **except ElevenLabs**, which takes a `model`
-key (`eleven_v3` default, `eleven_multilingual_v2`, `eleven_turbo_v2_5`, `eleven_flash_v2_5`):
+key (`eleven_v3` default, `eleven_v3_conversational`, `eleven_multilingual_v2`,
+`eleven_turbo_v2_5`, `eleven_flash_v2_5`):
 `cartesia` `sonic-3` (`voice_id`; plus `language`, `speed` 0–3, `volume` 0–3, `emotion`,
 `pronunciation_dict_id`), `sarvam` `bulbul:v3` (`speaker`; plus `target_language_code`, `pace`
 0.3–3.0, `speech_sample_rate`, `temperature` 0.01–2.0), `elevenlabs` (`voice_id`; plus
@@ -327,6 +372,12 @@ cartesia `speed`, sarvam `pace`, elevenlabs `voice_settings.speed`. Mistral has 
 `assistant_end_call_url` (AI calls) and `passthrough_webhook_url` (passthrough calls) receive a
 POST with the full call record on every terminal outcome (`completed`, `busy`, `no_answer`,
 `rejected`, `cancelled`, `unreachable`, `timeout`, `failed`).
+
+Delivery tuning is per assistant: `assistant_end_call_webhook` = `{ timeout_seconds: 1–120,
+attempts: 1–5 }`. On PATCH the object is merged key by key (like `interaction_config`); an omitted
+or `null` key falls back to the server default (`timeout_seconds` 30, `attempts` 3). Retries cover
+connection errors, read timeouts, `429` and `5xx`; other `4xx` are not retried, so make the endpoint
+idempotent (key on `data.room_name`, or `data.queue_id` for outbound).
 
 - `data.queue_id` correlates with the `POST /call/outbound` response (outbound only; `null`
   for inbound/web).
@@ -346,35 +397,40 @@ POST with the full call record on every terminal outcome (`completed`, `busy`, `
 ### SIP (`/api/sip`)
 
 - `POST /create-outbound-trunk` - Create SIP trunk. Pass `passthrough_mode: true` to create a passthrough-only trunk. Optionally pass `passthrough_webhook_url` to receive end-of-call notifications.
-- `GET /list?user_id=...` - List SIP trunks.
-- `GET /details/:id?user_id=...` - SIP trunk details.
+- `GET /list` - List SIP trunks.
+- `GET /details/:id` - SIP trunk details.
 - `DELETE /delete/:id` - Deactivate the trunk upstream (`DELETE /sip/deactivate/{trunk_id}`, a
-  soft delete that keeps the record for audit) and remove the local mirror. `user_id` in
-  query/body. An already-inactive or already-deleted upstream trunk (400/404) still removes the
-  local row and reports `external_deactivated: false`; any other upstream failure aborts before
-  the local delete, so the two sides cannot drift.
+  soft delete that keeps the record for audit) and remove the local mirror. An already-inactive or
+  already-deleted upstream trunk (400/404) still removes the local row and reports
+  `external_deactivated: false`; any other upstream failure aborts before the local delete, so the
+  two sides cannot drift.
+
+**Breaking change (2026-09-22): `GET /list` and `GET /details/:id` no longer return
+`trunk_config`.** It carries the Twilio `username` and `password`; upstream withholds it from the
+list and documents no details endpoint, so the proxy does the same. The config is still sent on
+create.
 
 ### Call (`/api/call`)
 
 - `POST /outbound` - Trigger outbound call. Returns a `queue_id`.
-- `GET /queue/:queue_id?user_id=...` - Dispatch state of a queued call: `pending`,
+- `GET /queue/:queue_id` - Dispatch state of a queued call: `pending`,
   `dispatching`, `dispatched` or `failed`, plus `retry_count` and `last_error`. `dispatched`
   means the handoff to the telephony provider succeeded — the live call outcome arrives via
   the end-call webhook or the assistant call logs, not here. Works for passthrough queue ids too.
 
 ### Integration (`/api/integration`)
 
-- `POST /store` - Store or update provider API key. Body: `user_id`, `service_name`, `api_key`;
+- `POST /store` - Store or update provider API key. Body: `service_name`, `api_key`;
   `service_type` is optional and derived from `service_name` when omitted. A `service_name`
   the provider map doesn't know returns `400`. Returns immediately; a background re-sync
   (below) starts automatically. Response includes `resync: { job_id, status: "running" }`.
-- `GET /get?user_id=...&service_name=...` - Retrieve provider API key.
-- `GET /resync-status?user_id=...&service_name=...` - Current re-sync job:
+- `GET /get?service_name=...` - Retrieve provider API key.
+- `GET /resync-status?service_name=...` - Current re-sync job:
   `{ status, total, processed, succeeded, failed[], updatedAt }`. `status` is
   `running | completed | error | interrupted` (`interrupted` = a running job that stalled, e.g.
   a process restart — safe to re-trigger).
-- `POST /resync` - Manually (re-)trigger the re-sync for one provider. Body: `user_id`,
-  `service_name`. Returns `202` with `{ resync: { job_id, status } }`. This backs the frontend
+- `POST /resync` - Manually (re-)trigger the re-sync for one provider. Body: `service_name`.
+  Returns `202` with `{ resync: { job_id, status } }`. This backs the frontend
   "Re-sync" button and retries failures.
 
 **Key rotation re-sync.** A provider key is baked into each assistant on the external side at
@@ -398,16 +454,16 @@ provider have all been migrated — see [Applied migrations](#applied-migrations
 ### Tool (`/api/tool`)
 
 - `POST /create` - Create tool.
-- `GET /list?user_id=...` - List tools.
-- `GET /details/:id?user_id=...` - Tool details.
-- `PATCH /update/:id` - Update tool (`user_id` in body).
-- `DELETE /delete/:id` - Delete tool (`user_id` in query/body).
+- `GET /list` - List tools.
+- `GET /details/:id` - Tool details.
+- `PATCH /update/:id` - Update tool.
+- `DELETE /delete/:id` - Delete tool.
 - `POST /attach/:assistant_id` - Attach tools to assistant.
 - `POST /detach/:assistant_id` - Detach tools from assistant.
 
 ### Web Call (`/api/web-call`)
 
-- `POST /get-token` - Generate web call token (AI agent call). Body: `user_id`, `assistant_id`, `metadata?`.
+- `POST /get-token` - Generate web call token (AI agent call). Body: `assistant_id`, `metadata?`.
 
 ### Passthrough Call (`/api/passthrough-call`)
 
@@ -415,8 +471,8 @@ Human web-to-SIP calls with no AI agent. Web browser speaks directly to phone ca
 
 Prerequisites: a SIP trunk created with `passthrough_mode: true`.
 
-- `POST /passthrough-outbound` - Trigger passthrough call. Body: `user_id`, `trunk_id`, `to_number`, `metadata?`. Returns `room_token` (use with LiveKit JS/React SDK to connect browser), `room_name`, `queue_id`, `status`.
-- `GET /call-records?user_id=...` - List call records, passthrough-only by default. Optional:
+- `POST /passthrough-outbound` - Trigger passthrough call. Body: `trunk_id`, `to_number`, `metadata?`. Returns `room_token` (use with LiveKit JS/React SDK to connect browser), `room_name`, `queue_id`, `status`.
+- `GET /call-records` - List call records, passthrough-only by default. Optional:
   `to_number`, `call_status`, `start_date`, `end_date`, `limit` (1-100), `page` (1-based),
   `sort_by` (`started_at` | `ended_at` | `call_duration_minutes`), `sort_order` (`asc` | `desc`),
   and `passthrough_only=false` to include AI calls. Every record carries `is_passthrough`, so a
@@ -429,10 +485,10 @@ A mapping needs an assistant to route calls; a context strategy is optional. Wit
 the number routes normally, with no caller-context lookup and no added latency.
 
 - `POST /assign` - Assign inbound number. `inbound_context_strategy_id` is optional and takes a local `_id` or the external id. 404 if the assistant or strategy is unknown, 409 if the number is already assigned.
-- `GET /list?user_id=...` - List inbound mappings, including `assistant_name` and `inbound_context_strategy_name`.
-- `PATCH /update/:id` - Update inbound mapping (`user_id` in body). Send `assistant_id` and/or `inbound_context_strategy_id`; `null` detaches either one.
-- `POST /detach/:id` - Detach inbound mapping (`user_id` in query/body). Clears both the assistant and the strategy; the mapping stays active.
-- `DELETE /delete/:id` - Delete inbound mapping (`user_id` in query/body). Releases the normalized number for reuse.
+- `GET /list` - List inbound mappings, including `assistant_name` and `inbound_context_strategy_name`.
+- `PATCH /update/:id` - Update inbound mapping. Send `assistant_id` and/or `inbound_context_strategy_id`; `null` detaches either one.
+- `POST /detach/:id` - Detach inbound mapping. Clears both the assistant and the strategy; the mapping stays active.
+- `DELETE /delete/:id` - Delete inbound mapping. Releases the normalized number for reuse.
 
 ### Inbound Context Strategy (`/api/inbound-context-strategy`)
 
@@ -442,10 +498,10 @@ before the prompt renders; its `context` object becomes `{{context.*}}`. A faili
 never fails the call — the prompt just renders those placeholders empty.
 
 - `POST /create` - Create strategy. `strategy_config`: `url` (http/https, no private or internal hosts), optional `headers`, optional `timeout_seconds` (`0.5`-`10.0`, default `2.0` — it blocks the start of the call, so keep it low).
-- `GET /list?user_id=...` - List strategies.
-- `GET /details/:id?user_id=...` - Strategy details.
-- `PATCH /update/:id` - Update strategy (`user_id` in body). `headers` merges key by key: send only what you are changing, and send a header with value `null` to delete it. Other `strategy_config` keys replace outright.
-- `DELETE /delete/:id` - Delete strategy (`user_id` in query/body). Cascades: every inbound mapping referencing it is detached from the strategy, but keeps routing.
+- `GET /list` - List strategies.
+- `GET /details/:id` - Strategy details.
+- `PATCH /update/:id` - Update strategy. `headers` merges key by key: send only what you are changing, and send a header with value `null` to delete it. Other `strategy_config` keys replace outright.
+- `DELETE /delete/:id` - Delete strategy. Cascades: every inbound mapping referencing it is detached from the strategy, but keeps routing.
 
 Secret-looking header values (`authorization`, `token`, `secret`, `api-key`, `password`)
 come back masked as `****` from list/details. Sending a mask back on update is rejected
@@ -460,15 +516,14 @@ message pass through unchanged (FastAPI `detail` entries are flattened to
 ### Analytics (`/api/analytics`)
 
 Authentication:
-- Uses `user_id` query parameter
-- Does not require `Authorization` header
+- `Authorization: Bearer <api_key>` (like every other endpoint)
 
 Endpoints:
-- `GET /dashboard?user_id=...` - Summary totals and period counts.
-- `GET /calls/by-assistant?user_id=...` - Call metrics grouped by assistant.
-- `GET /calls/by-phone-number?user_id=...` - Call metrics grouped by destination number.
-- `GET /calls/by-time?user_id=...` - Time-series metrics (`granularity=day|week|month`).
-- `GET /calls/by-service?user_id=...` - Call metrics grouped by service.
+- `GET /dashboard` - Summary totals and period counts.
+- `GET /calls/by-assistant` - Call metrics grouped by assistant.
+- `GET /calls/by-phone-number` - Call metrics grouped by destination number.
+- `GET /calls/by-time` - Time-series metrics (`granularity=day|week|month`).
+- `GET /calls/by-service` - Call metrics grouped by service.
 
 Supported query params:
 - Common: `start_date`, `end_date`
@@ -478,7 +533,8 @@ Supported query params:
 Example:
 
 ```bash
-curl -X GET "http://localhost:3000/api/analytics/dashboard?user_id=YOUR_USER_ID&start_date=2026-03-01T00:00:00Z&end_date=2026-03-28T23:59:59Z"
+curl -X GET "http://localhost:3000/api/analytics/dashboard?start_date=2026-03-01T00:00:00Z&end_date=2026-03-28T23:59:59Z" \
+  -H "Authorization: Bearer $LK_KEY"
 ```
 
 ## ID Usage Notes

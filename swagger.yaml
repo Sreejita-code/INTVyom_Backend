@@ -8,11 +8,11 @@ info:
     and analytics.
 
     ## Authentication
-    Most endpoints require a valid `user_id` (MongoDB ObjectId) that maps to a user with a
-    stored `api_key`. That `api_key` is forwarded as a Bearer token to the external Vyom API.
-
-    There is no JWT/session-based authentication at the Express layer -- authentication is
-    implicit per-request via user lookup.
+    Every endpoint except `POST /api/auth/signup` and `POST /api/auth/login` requires the user's
+    upstream LiveKit key, sent as `Authorization: Bearer <api_key>`. A missing or unknown key is
+    a `401`. Obtain the key from signup or login. Identity comes from that key — a `user_id` in
+    the request body or query string is ignored, and the key is forwarded to the external Vyom
+    API on the user's behalf.
 
     ## Dual ID Resolution
     Many endpoints accept either a local MongoDB `_id` or an external service ID
@@ -53,7 +53,7 @@ info:
     | Field | Values | Default |
     | :--- | :--- | :--- |
     | `provider` | `openai` only in pipeline; `gemini` or `openai` in realtime | `gemini` in realtime, `openai` in pipeline |
-    | `model` | OpenAI: validated against the realtime list below. Gemini: validated against the Live ID list below | `gemini-2.5-flash-native-audio-preview-12-2025` upstream / `gemini-3.1-flash-live-preview` in the starter template (gemini), `gpt-realtime-1.5` (openai) |
+    | `model` | OpenAI: validated against the realtime list below. Gemini: validated against the Live ID list below | `gemini-3.8-live` (gemini), `gpt-realtime-1.5` (openai) |
     | `voice` | provider voice name. Gemini: closed 30-name roster; OpenAI: any name that is not a Gemini voice | `Puck` (gemini), `marin` (openai). Honored only in `realtime` — ignored in `pipeline` |
     | `api_key` | string | resolved from the Integrations module |
 
@@ -63,10 +63,12 @@ info:
     The retired preview pair (`gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`) is
     rejected: those accounts opened a session that could never connect.
 
-    Gemini Live IDs (realtime + gemini, default `gemini-2.5-flash-native-audio-preview-12-2025`):
-    `gemini-2.5-flash-native-audio-preview-12-2025`, `gemini-live-2.5-flash-native-audio`,
-    `gemini-3.1-flash-live-preview`. A non-Live Gemini ID (e.g. `gemini-2.5-flash`) is a `400` —
-    it opens a socket the API then closes. Gemini voices are closed to the 30-name roster
+    Gemini Live IDs (realtime + gemini, default `gemini-3.8-live`): `gemini-3.8-live`,
+    `gemini-3.8-live-extended-thinking`, `gemini-3.1-flash-live-preview`,
+    `gemini-2.5-flash-native-audio-preview-12-2025`. A non-Live Gemini ID (e.g.
+    `gemini-2.5-flash`) is a `400` — it opens a socket the API then closes. The plugin also lists
+    `gemini-live-2.5-flash-native-audio`, but it is the Vertex AI id and is rejected with a `422`.
+    Gemini voices are closed to the 30-name roster
     (`Zephyr`, `Puck`, `Charon`, `Kore`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`,
     `Autonoe`, `Enceladus`, `Iapetus`, `Umbriel`, `Algieba`, `Despina`, `Erinome`, `Algenib`,
     `Rasalgethi`, `Laomedeia`, `Achernar`, `Alnilam`, `Schedar`, `Gacrux`, `Pulcherrima`,
@@ -78,9 +80,12 @@ info:
     call. Default `gpt-4.1`.
 
     `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`,
-    `gpt-5-nano`, `gpt-5.1`, `gpt-5.1-chat-latest`, `gpt-5.2`, `gpt-5.2-chat-latest`,
-    `gpt-5.3-chat-latest`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`,
-    `gpt-5.6-terra`, `gpt-5.6-luna`, `chat-latest`, `gpt-oss-120b`.
+    `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`,
+    `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`.
+
+    The `*-chat-latest` aliases, `chat-latest` and `gpt-oss-120b` are NOT accepted: the aliases
+    were retired by OpenAI on 2026-06-19 and the other two are not served by `api.openai.com`.
+    An assistant still holding one answers calls with silence.
 
     Cascade also unlocks seven generation knobs on `assistant_llm_config` — `temperature`,
     `max_output_tokens`, `reasoning_effort`, `service_tier`, `verbosity`, `tool_choice`,
@@ -91,9 +96,9 @@ info:
     ### STT (`assistant_stt_model` + `assistant_stt_config`)
     | Provider | Valid in | Model default | Other config |
     | :--- | :--- | :--- | :--- |
-    | `sarvam` | `pipeline` (default), `cascade` | `saaras:v3` (also `saaras:v2.5`, `saarika:v2.5`) | `language` default `unknown` (auto-detect); `mode` default `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`) |
+    | `sarvam` | `pipeline` (default), `cascade` | `saaras:v3` (also `saaras:v4`) | `language` default `unknown` (auto-detect); `mode` default `codemix` (also `transcribe`, `translate`, `verbatim`, `translit`) |
     | `cartesia` | `cascade` | `ink-whisper` (43 languages) or `ink-2` (English only) | fixed `language`, no auto-detect |
-    | `deepgram` | `cascade` | `nova-3` (multilingual, 45 languages); also `nova-2`, `flux-general-en`, `flux-general-multi` | `language` (BCP-47 or `multi`), `enable_diarization`, `keyterm` |
+    | `deepgram` | `cascade` | `nova-3` (multilingual, 45 languages); also `nova-3-general`, `nova-3-multilingual`, `flux-general-en`, `flux-general-multi` | `language` (BCP-47 or `multi`), `enable_diarization`, `keyterm` |
     | `elevenlabs` | `cascade` | `scribe_v2_realtime` (auto-detects ~190 languages); also `scribe_v2`, `scribe_v1` | `language_code`, `no_verbatim` |
     | `openai` | `cascade` | `gpt-4o-mini-transcribe`; also `gpt-4o-transcribe`, `whisper-1` | `language`, `detect_language`, `prompt`, `noise_reduction_type`, `use_realtime` |
     | `native` | `pipeline` only — rejected in `cascade` | n/a (the realtime LLM transcribes itself) | no config |
@@ -111,7 +116,7 @@ info:
     **Omitting the language auto-detects everywhere except Cartesia.** `sarvam` → `unknown`;
     `elevenlabs` → no code sent (~190 languages); `openai` → `detect_language` on; `deepgram` →
     `multi` on `nova-3` / `flux-general-multi` (billed at a higher per-minute rate), `en-US` on
-    `nova-2` / `flux-general-en`, which cannot detect; `cartesia` → `en`, because Cartesia has no
+    `flux-general-en`, which cannot detect; `cartesia` → `en`, because Cartesia has no
     detection at all. A pinned ElevenLabs `language_code` **disables** its auto-detect.
 
     **`assistant_interaction_config.preferred_languages` is not a language parameter.** It hints
@@ -208,7 +213,7 @@ info:
     name: INTVoicekit Support
 
 servers:
-  - url: http://localhost:3000
+  - url: http://localhost:8002
     description: Local development server
 
 tags:
@@ -236,6 +241,8 @@ tags:
     description: Call analytics and dashboard metrics
   - name: Audio
     description: Audio file upload, listing, and management
+  - name: Docs
+    description: MCP server exposing this API's own contracts
 
 paths:
   # ==================== AUTH ====================
@@ -244,6 +251,7 @@ paths:
       tags: [Auth]
       summary: Register a new user
       description: Creates a new user account with organization details.
+      security: [] # public — this is how a caller obtains the bearer key
       requestBody:
         required: true
         content:
@@ -305,6 +313,7 @@ paths:
       tags: [Auth]
       summary: Login with credentials
       description: Authenticates a user by username and password.
+      security: [] # public — the password is the credential
       requestBody:
         required: true
         content:
@@ -359,54 +368,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/auth/get_api:
-    get:
-      tags: [Auth]
-      summary: Get user API key
-      description: Retrieves the API key for a given user by username.
-      parameters:
-        - name: user_name
-          in: query
-          required: true
-          schema:
-            type: string
-          example: "john_doe"
-      responses:
-        '200':
-          description: API key retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user_id:
-                    type: string
-                    example: "665f1a2b3c4d5e6f7a8b9c0d"
-                  user_name:
-                    type: string
-                    example: "john_doe"
-                  api_key:
-                    type: string
-                    example: "vyom_livekit_xxxxxxxxxxxxxxxx"
-        '400':
-          description: Missing user_name parameter
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: User not found or no API key
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
   # ==================== ASSISTANT ====================
   /api/assistant/create:
     post:
@@ -421,11 +382,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, assistant_name, assistant_description, assistant_prompt]
+              required: [assistant_name, assistant_description, assistant_prompt]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 assistant_name:
                   type: string
                   example: "Customer Support Bot"
@@ -482,6 +440,8 @@ paths:
                   type: string
                   format: uri
                   example: "https://example.com/webhook/end-call"
+                assistant_end_call_webhook:
+                  $ref: '#/components/schemas/AssistantEndCallWebhook'
                 assistant_greeting_audio:
                   type: object
                   properties:
@@ -492,6 +452,12 @@ paths:
                       type: string
                       example: "audio_123"
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '201':
           description: Assistant created successfully
           content:
@@ -523,11 +489,6 @@ paths:
       summary: List all assistants
       description: Retrieves a paginated list of assistants from the external API.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: page
           in: query
           schema:
@@ -570,6 +531,12 @@ paths:
             enum: [asc, desc]
             default: desc
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Assistant list retrieved
           content:
@@ -584,7 +551,7 @@ paths:
                     items:
                       $ref: '#/components/schemas/Assistant'
         '400':
-          description: Missing user_id
+          description: Invalid request parameters
           content:
             application/json:
               schema:
@@ -607,12 +574,13 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Assistant details retrieved
           content:
@@ -655,11 +623,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 assistant_name:
                   type: string
                 assistant_description:
@@ -712,9 +676,17 @@ paths:
                   type: string
                 assistant_end_call_url:
                   type: string
+                assistant_end_call_webhook:
+                  $ref: '#/components/schemas/AssistantEndCallWebhook'
                 assistant_greeting_audio:
                   type: object
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Assistant updated successfully
           content:
@@ -759,22 +731,19 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Can also be provided in request body
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                user_id:
-                  type: string
-                  description: Alternative to query parameter
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Assistant deleted successfully
           content:
@@ -820,11 +789,6 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: page
           in: query
           schema:
@@ -853,6 +817,12 @@ paths:
             type: string
             enum: [asc, desc]
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Call logs retrieved
           content:
@@ -890,11 +860,6 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: to_number
           in: query
           required: true
@@ -912,6 +877,12 @@ paths:
             type: string
             format: date-time
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Billable minutes calculated
           content:
@@ -968,11 +939,6 @@ paths:
         `data.assistants_skipped` before treating the totals as complete — a non-zero value means
         the numbers are lower than reality, and `message` says so too.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: start_date
           in: query
           schema:
@@ -984,6 +950,12 @@ paths:
             type: string
             format: date-time
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Platform billable minutes retrieved
           content:
@@ -1039,11 +1011,6 @@ paths:
       summary: Download platform billable minutes as Excel
       description: Downloads an Excel file (.xlsx) with platform-wise billable minutes.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: start_date
           in: query
           schema:
@@ -1055,6 +1022,12 @@ paths:
             type: string
             format: date-time
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Excel file download
           content:
@@ -1083,11 +1056,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, trunk_name, trunk_type, trunk_config]
+              required: [trunk_name, trunk_type, trunk_config]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 trunk_name:
                   type: string
                   example: "Production Twilio Trunk"
@@ -1122,6 +1092,12 @@ paths:
                   type: string
                   format: uri
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '201':
           description: Outbound trunk created
           content:
@@ -1152,13 +1128,13 @@ paths:
       tags: [SIP]
       summary: List SIP trunks
       description: Retrieves all SIP trunks for a user from the local database.
-      parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: SIP trunks retrieved
           content:
@@ -1194,12 +1170,13 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: SIP trunk details retrieved
           content:
@@ -1242,22 +1219,19 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Can also be provided in request body
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                user_id:
-                  type: string
-                  description: Alternative to query parameter
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: SIP trunk deleted
           content:
@@ -1304,11 +1278,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, assistant_id, trunk_id, to_number]
+              required: [assistant_id, trunk_id, to_number]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 assistant_id:
                   type: string
                   description: Local _id or external_assistant_id
@@ -1325,6 +1296,12 @@ paths:
                   description: Optional metadata passed through to the external call API
                   example: {"campaign_id": "promo_2024", "source": "web"}
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Call initiated (external API response)
           content:
@@ -1358,12 +1335,13 @@ paths:
             type: string
           description: The queue_id returned when the call was triggered.
           example: "8b7df5ea0fdc497ea4f44bd31954a387"
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Queue status retrieved
           content:
@@ -1405,7 +1383,7 @@ paths:
                         type: string
                         nullable: true
         '400':
-          description: Missing user_id
+          description: Invalid request parameters
           content:
             application/json:
               schema:
@@ -1431,11 +1409,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, service_name, api_key]
+              required: [service_name, api_key]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 service_type:
                   type: string
                   enum: [TTS, LLM, STT]
@@ -1458,6 +1433,12 @@ paths:
                   type: string
                   example: "sk-xxxxxxxxxxxx"
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: API key saved
           content:
@@ -1510,11 +1491,6 @@ paths:
       summary: Get integration API key
       description: Retrieves the stored API key for a specific service.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: service_name
           in: query
           required: true
@@ -1522,6 +1498,12 @@ paths:
             type: string
             enum: [sarvam, cartesia, deepgram, elevenlabs, mistral, openai, gemini]
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: API key retrieved
           content:
@@ -1560,11 +1542,6 @@ paths:
       summary: Get re-sync job status
       description: Retrieves the status of a re-sync job for a user and service.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: service_name
           in: query
           required: true
@@ -1572,6 +1549,12 @@ paths:
             type: string
             enum: [sarvam, cartesia, deepgram, elevenlabs, mistral, openai, gemini]
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Re-sync status retrieved
           content:
@@ -1629,16 +1612,19 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, service_name]
+              required: [service_name]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 service_name:
                   type: string
                   enum: [sarvam, cartesia, deepgram, elevenlabs, mistral, openai, gemini]
                   example: "sarvam"
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '202':
           description: Re-sync triggered
           content:
@@ -1687,11 +1673,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, tool_name, tool_execution_type]
+              required: [tool_name, tool_execution_type]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 tool_name:
                   type: string
                   example: "Weather Check"
@@ -1726,6 +1709,12 @@ paths:
                     headers:
                       type: object
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '201':
           description: Tool created
           content:
@@ -1752,13 +1741,13 @@ paths:
       tags: [Tool]
       summary: List tools
       description: Retrieves all tools from the external API.
-      parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Tool list retrieved
           content:
@@ -1790,12 +1779,13 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Tool details retrieved
           content:
@@ -1831,10 +1821,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id]
               properties:
-                user_id:
-                  type: string
                 tool_name:
                   type: string
                 tool_description:
@@ -1848,6 +1835,12 @@ paths:
                 tool_execution_config:
                   type: object
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Tool updated
           content:
@@ -1872,22 +1865,19 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Can also be provided in request body
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                user_id:
-                  type: string
-                  description: Alternative to query parameter
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Tool deleted
           content:
@@ -1925,10 +1915,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, tool_ids]
+              required: [tool_ids]
               properties:
-                user_id:
-                  type: string
                 tool_ids:
                   type: array
                   items:
@@ -1937,6 +1925,12 @@ paths:
                   description: Array of local _id or external_tool_id
                   example: ["665f1a2b3c4d5e6f7a8b9c0d", "665f1a2b3c4d5e6f7a8b9c0e"]
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Tools attached
           content:
@@ -1967,16 +1961,20 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, tool_ids]
+              required: [tool_ids]
               properties:
-                user_id:
-                  type: string
                 tool_ids:
                   type: array
                   items:
                     type: string
                   minItems: 1
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Tools detached
           content:
@@ -2004,11 +2002,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, assistant_id]
+              required: [assistant_id]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 assistant_id:
                   type: string
                   description: Local _id or external_assistant_id
@@ -2022,6 +2017,12 @@ paths:
                   default: false
                   description: Set true for text-only (chat) calls
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Token generated (external API response)
           content:
@@ -2066,11 +2067,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, trunk_id, to_number]
+              required: [trunk_id, to_number]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 trunk_id:
                   type: string
                   description: Local _id or external_trunk_id (must have passthrough_mode=true)
@@ -2082,6 +2080,12 @@ paths:
                   type: object
                   description: Optional call metadata
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Passthrough call initiated
           content:
@@ -2125,11 +2129,6 @@ paths:
         `passthrough_only=false` to query across AI calls as well — every record carries
         `is_passthrough` so the two are always distinguishable in a mixed result.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: passthrough_only
           in: query
           schema:
@@ -2186,6 +2185,12 @@ paths:
             enum: [asc, desc]
             default: desc
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Call records retrieved
           content:
@@ -2223,11 +2228,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, assistant_id, service, inbound_config]
+              required: [assistant_id, service, inbound_config]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 assistant_id:
                   type: string
                   description: Local _id or external_assistant_id
@@ -2247,6 +2249,12 @@ paths:
                     Optional. Local _id or external_strategy_id of an inbound context
                     strategy. Omit to route without any caller-context lookup.
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '201':
           description: Inbound assignment created
           content:
@@ -2301,13 +2309,13 @@ paths:
         Retrieves all inbound call configurations. Each entry includes
         `assistant_name` and `inbound_context_strategy_name` resolved for convenience;
         both are null when nothing is attached.
-      parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Inbound list retrieved
           content:
@@ -2350,10 +2358,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id]
               properties:
-                user_id:
-                  type: string
                 assistant_id:
                   type: string
                   nullable: true
@@ -2364,6 +2369,12 @@ paths:
                   description: >-
                     Local _id or external_strategy_id. Pass null to detach the strategy.
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Inbound updated
           content:
@@ -2402,22 +2413,19 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Can also be provided in request body
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                user_id:
-                  type: string
-                  description: Alternative to query parameter
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Assistant detached
           content:
@@ -2451,22 +2459,19 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Can also be provided in request body
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                user_id:
-                  type: string
-                  description: Alternative to query parameter
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Inbound deleted
           content:
@@ -2507,11 +2512,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id, name, strategy_config]
+              required: [name, strategy_config]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 name:
                   type: string
                   example: "Customer Context Strategy"
@@ -2547,6 +2549,12 @@ paths:
                         up to 10s of silence for the caller.
                       example: 2.0
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '201':
           description: Strategy created
           content:
@@ -2580,13 +2588,13 @@ paths:
       description: |
         Retrieves all active inbound context strategies. Secret header values are
         returned masked as `****` — never send a masked value back on update.
-      parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Strategy list retrieved
           content:
@@ -2621,12 +2629,13 @@ paths:
           schema:
             type: string
           description: Local _id or external_strategy_id
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Strategy details retrieved
           content:
@@ -2684,10 +2693,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id]
               properties:
-                user_id:
-                  type: string
                 name:
                   type: string
                 type:
@@ -2717,6 +2723,12 @@ paths:
                       minimum: 0.5
                       maximum: 10.0
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Strategy updated
           content:
@@ -2761,22 +2773,19 @@ paths:
           schema:
             type: string
           description: Local _id or external_strategy_id
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Can also be provided in request body
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                user_id:
-                  type: string
-                  description: Alternative to query parameter
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Strategy deleted
           content:
@@ -2809,11 +2818,6 @@ paths:
       summary: Get analytics dashboard
       description: Retrieves an aggregated dashboard summary of call analytics.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: start_date
           in: query
           schema:
@@ -2825,6 +2829,12 @@ paths:
             type: string
             format: date-time
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Dashboard data retrieved
           content:
@@ -2850,11 +2860,6 @@ paths:
       summary: Get call analytics by assistant
       description: Retrieves call metrics grouped by assistant.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: start_date
           in: query
           schema:
@@ -2866,6 +2871,12 @@ paths:
             type: string
             format: date-time
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Per-assistant analytics retrieved
           content:
@@ -2892,11 +2903,6 @@ paths:
       summary: Get call analytics by phone number
       description: Retrieves call metrics grouped by phone number.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: start_date
           in: query
           schema:
@@ -2913,6 +2919,12 @@ paths:
             type: string
           description: Filter by specific assistant
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Per-phone-number analytics retrieved
           content:
@@ -2939,11 +2951,6 @@ paths:
       summary: Get call analytics by time
       description: Retrieves call metrics as a time series.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: start_date
           in: query
           schema:
@@ -2966,6 +2973,12 @@ paths:
             type: string
           description: Filter by specific assistant
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Time-series analytics retrieved
           content:
@@ -2992,11 +3005,6 @@ paths:
       summary: Get call analytics by service
       description: Retrieves call metrics grouped by telephony service provider.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: start_date
           in: query
           schema:
@@ -3008,6 +3016,12 @@ paths:
             type: string
             format: date-time
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Per-service analytics retrieved
           content:
@@ -3042,11 +3056,8 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [user_id, audio_name, transcript, file]
+              required: [audio_name, transcript, file]
               properties:
-                user_id:
-                  type: string
-                  example: "665f1a2b3c4d5e6f7a8b9c0d"
                 audio_name:
                   type: string
                   example: "Welcome Greeting"
@@ -3058,6 +3069,12 @@ paths:
                   format: binary
                   description: Audio file (binary)
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Audio uploaded
           content:
@@ -3085,11 +3102,6 @@ paths:
       summary: List audio files
       description: Retrieves a paginated list of uploaded audio files.
       parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
         - name: page
           in: query
           schema:
@@ -3099,6 +3111,12 @@ paths:
           schema:
             type: integer
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Audio list retrieved
           content:
@@ -3130,12 +3148,13 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Audio details retrieved
           content:
@@ -3163,12 +3182,13 @@ paths:
           required: true
           schema:
             type: string
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
       responses:
+        '401':
+          description: Missing or invalid bearer API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '200':
           description: Audio deleted
           content:
@@ -3177,6 +3197,56 @@ paths:
                 type: object
         '500':
           description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ==================== DOCS ====================
+  /mcp:
+    post:
+      tags: [Docs]
+      summary: MCP (Model Context Protocol) JSON-RPC endpoint
+      description: >
+        Streamable HTTP MCP server exposing this API's own contracts as four tools:
+        `list_endpoints`, `search_endpoints`, `get_endpoint` and `get_schema`. It is stateless
+        (one request per call), read-only (it never touches MongoDB, the upstream LiveKit API or
+        any credential) and unauthenticated, matching the public `/api-docs`.
+        The content is read from `swagger.yaml` once at process start.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: A JSON-RPC 2.0 request (`initialize`, `tools/list` or `tools/call`).
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                  example: "2.0"
+                id:
+                  oneOf:
+                    - type: string
+                    - type: integer
+                  example: 1
+                method:
+                  type: string
+                  example: "tools/list"
+                params:
+                  type: object
+                  description: Method-specific parameters.
+      responses:
+        '200':
+          description: JSON-RPC 2.0 result (bare JSON or `text/event-stream` framing).
+          content:
+            application/json:
+              schema:
+                type: object
+        '405':
+          description: Method not allowed — the server is stateless, use POST.
           content:
             application/json:
               schema:
@@ -3262,6 +3332,18 @@ components:
         end_call_url:
           type: string
           nullable: true
+        end_call_webhook:
+          type: object
+          nullable: true
+          description: >
+            Delivery tuning for `end_call_url`; see `assistant_end_call_webhook` on create/update.
+          properties:
+            timeout_seconds:
+              type: integer
+              nullable: true
+            attempts:
+              type: integer
+              nullable: true
         createdAt:
           type: string
           format: date-time
@@ -3364,10 +3446,12 @@ components:
             Validated per mode against a different list, because each mode talks to a different
             API. Pipeline and realtime+openai: `gpt-realtime`, `gpt-realtime-1.5`,
             `gpt-realtime-2`, `gpt-realtime-2025-08-28`, `gpt-realtime-mini`
-            (default `gpt-realtime-1.5`). Realtime+gemini: `gemini-2.5-flash-native-audio-preview-12-2025`,
-            `gemini-live-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview`
-            (upstream default `gemini-2.5-flash-native-audio-preview-12-2025`; the starter
-            template pins `gemini-3.1-flash-live-preview`). Cascade (default `gpt-4.1`):
+            (default `gpt-realtime-1.5`). Realtime+gemini: `gemini-3.8-live`,
+            `gemini-3.8-live-extended-thinking`, `gemini-3.1-flash-live-preview`,
+            `gemini-2.5-flash-native-audio-preview-12-2025`
+            (upstream default `gemini-3.8-live`; the starter template pins `gemini-3.8-live`).
+            `gemini-live-2.5-flash-native-audio` is the Vertex AI id and is rejected with a `422`.
+            Cascade (default `gpt-4.1`):
             `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`,
             `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`,
             `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`.
@@ -3511,12 +3595,14 @@ components:
             apply — the way to fix how the agent says names, SKUs and domain jargon.
         model:
           type: string
-          enum: [eleven_v3, eleven_multilingual_v2, eleven_turbo_v2_5, eleven_flash_v2_5]
+          enum: [eleven_v3, eleven_v3_conversational, eleven_multilingual_v2, eleven_turbo_v2_5, eleven_flash_v2_5]
           default: eleven_v3
           description: >
             ElevenLabs only — the one provider whose synthesis model is selectable. The other
             three are fixed (cartesia `sonic-3`, sarvam `bulbul:v3`, mistral
-            `voxtral-mini-tts-2603`) and reject a `model` key.
+            `voxtral-mini-tts-2603`) and reject a `model` key. Neither v3 model reads
+            `voice_settings.speed`; only `eleven_multilingual_v2`, `eleven_turbo_v2_5` and
+            `eleven_flash_v2_5` do.
         voice_settings:
           type: object
           description: >
@@ -3542,6 +3628,31 @@ components:
               description: ElevenLabs speaking rate. Not the same key as cartesia `speed`.
             use_speaker_boost:
               type: boolean
+
+    # Delivery tuning for the end-of-call webhook (`assistant_end_call_url`). Upstream merges it
+    # key by key, like assistant_interaction_config: naming only `attempts` keeps the stored
+    # timeout, and sending a field as `null` returns it to the server default.
+    AssistantEndCallWebhook:
+      type: object
+      description: >
+        Delivery tuning for `assistant_end_call_url`. Every key is optional. On PATCH the object
+        is merged with what is stored. An omitted or `null` key falls back to the server default
+        (`timeout_seconds` 30, `attempts` 3).
+      properties:
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 120
+          nullable: true
+          description: Seconds the endpoint has to answer. `null` uses the server default (30).
+          example: 45
+        attempts:
+          type: integer
+          minimum: 1
+          maximum: 5
+          nullable: true
+          description: Delivery attempts before giving up. `null` uses the server default (3).
+          example: 5
 
     AssistantSttConfig:
       type: object
@@ -3570,10 +3681,12 @@ components:
         model:
           type: string
           description: >
-            Per provider. Sarvam: `saaras:v3` (default), `saaras:v2.5`, `saarika:v2.5`.
+            Per provider. Sarvam: `saaras:v3` (default), `saaras:v4` — `saaras:v2.5` and
+            `saarika:v2.5` were sunset by Sarvam and are rejected.
             Cartesia: `ink-whisper` (default, 43 languages) or `ink-2` (English only).
-            Deepgram: `nova-3` (default, multilingual/45 languages), `nova-2`,
-            `flux-general-en` (English only), `flux-general-multi`.
+            Deepgram: `nova-3` (default, multilingual/45 languages), `nova-3-general`,
+            `nova-3-multilingual`, `flux-general-en` (English only), `flux-general-multi` —
+            `nova-2` lost its published price and is rejected.
             ElevenLabs: `scribe_v2_realtime` (default, auto-detects ~190 languages),
             `scribe_v2`, `scribe_v1`.
             OpenAI: `gpt-4o-mini-transcribe` (default, fast and cheap), `gpt-4o-transcribe`
@@ -3618,8 +3731,7 @@ components:
               items:
                 type: string
           description: >
-            Deepgram only, `nova-3` and `flux` only — `nova-2` uses a different keyword
-            mechanism and silently ignores this. Biases recognition toward a term (product
+            Deepgram only, `nova-3` and `flux` only. Biases recognition toward a term (product
             names, jargon). Omitted = not sent, no biasing.
           example: "invoice"
         language_code:
@@ -3668,6 +3780,11 @@ components:
 
     SipTrunk:
       type: object
+      description: >
+        A trunk as returned by the list and details endpoints. `trunk_config` (which carries the
+        Twilio `username` and `password`) is deliberately NOT returned — upstream withholds it
+        from the list for security reasons and documents no details endpoint. It is sent only on
+        create.
       properties:
         _id:
           type: string
@@ -3685,9 +3802,6 @@ components:
           type: string
           enum: [twilio, exotel]
           example: "twilio"
-        trunk_config:
-          type: object
-          description: Type-specific configuration (Twilio or Exotel)
         passthrough_mode:
           type: boolean
           example: false
@@ -3702,14 +3816,13 @@ components:
           format: date-time
 
   securitySchemes:
-    UserIdAuth:
-      type: apiKey
-      in: query
-      name: user_id
+    bearerAuth:
+      type: http
+      scheme: bearer
       description: |
-        Most endpoints require a valid user_id query parameter or request body field.
-        The server looks up the user's stored api_key and forwards it as a Bearer token
-        to the external Vyom API.
+        The user's upstream LiveKit `api_key`, obtained from `POST /api/auth/signup` or
+        `POST /api/auth/login`, sent as `Authorization: Bearer <api_key>`.
 
-globalSecurity:
-  - UserIdAuth: []
+# Applied to every operation; /api/auth/signup and /api/auth/login override it with `security: []`.
+security:
+  - bearerAuth: []

@@ -19,6 +19,7 @@ const {
   assertSttModelIdAllowed,
   assertTtsModelIdAllowed,
   assertSarvamSpeakerAllowed,
+  assertSarvamTargetLanguageAllowed,
   assertTtsPairProvidedForMode,
   assertTtsPairForModeUpdate,
   SERVICE_TIERS,
@@ -39,6 +40,12 @@ assert.deepStrictEqual(
   { assistant_end_call_enabled: false, assistant_end_call_url: null }
 );
 assert.ok(ASSISTANT_FIELDS.includes('assistant_interaction_config'));
+// The end-call webhook object is forwarded and mirrored, not silently dropped.
+assert.ok(ASSISTANT_FIELDS.includes('assistant_end_call_webhook'));
+assert.deepStrictEqual(
+  pickAssistantFields({ assistant_end_call_webhook: { timeout_seconds: 60 } }),
+  { assistant_end_call_webhook: { timeout_seconds: 60 } }
+);
 
 // --- mode inference ----------------------------------------------------------
 // The bug this replaces: llm_config alone flipped a pipeline assistant to realtime and
@@ -141,24 +148,35 @@ for (const model of ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-
 }
 assert.throws(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-realtime-1.5'), /not valid in cascade/);
 assert.throws(() => assertLlmModelAllowedInMode('realtime', 'openai', 'gpt-4.1'), /not valid in realtime/);
-// Gemini Live ids are validated, not free-form.
-for (const model of ['gemini-2.5-flash-native-audio-preview-12-2025', 'gemini-live-2.5-flash-native-audio', 'gemini-3.1-flash-live-preview']) {
+// Gemini Live ids are validated, not free-form. `gemini-3.8-live` is upstream's default; the
+// Vertex-only `gemini-live-2.5-flash-native-audio` is rejected.
+for (const model of ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking', 'gemini-3.1-flash-live-preview', 'gemini-2.5-flash-native-audio-preview-12-2025']) {
   assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'gemini', model), `gemini accepts ${model}`);
 }
 assert.throws(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-2.5-flash'), /not a Gemini Live model/);
+assert.throws(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-live-2.5-flash-native-audio'), /not a Gemini Live model/);
 // Voice roster: closed for gemini, open-but-gemini-excluded for openai.
 assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('gemini', 'Puck'));
 assert.throws(() => assertLlmVoiceAllowedForProvider('gemini', 'brand-new-voice'), /not a Gemini Live voice/);
 assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('openai', 'marin'));
 assert.throws(() => assertLlmVoiceAllowedForProvider('openai', 'Puck'), /Gemini Live voice/);
-// STT / TTS model ids.
+// STT / TTS model ids. Refreshed 2026-09-22: saaras:v4 / nova-3-multilingual /
+// eleven_v3_conversational in; saaras:v2.5 / nova-2 out.
 assert.doesNotThrow(() => assertSttModelIdAllowed('deepgram', 'nova-3'));
 assert.throws(() => assertSttModelIdAllowed('deepgram', 'nova-9'), /does not have a STT model/);
+assert.doesNotThrow(() => assertSttModelIdAllowed('sarvam', 'saaras:v4'));
+assert.throws(() => assertSttModelIdAllowed('sarvam', 'saaras:v2.5'), /does not have a STT model/);
+assert.doesNotThrow(() => assertSttModelIdAllowed('deepgram', 'nova-3-multilingual'));
+assert.throws(() => assertSttModelIdAllowed('deepgram', 'nova-2'), /does not have a STT model/);
 assert.doesNotThrow(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v3'));
+assert.doesNotThrow(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v3_conversational'));
 assert.throws(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v9'), /does not have a TTS model/);
-// Sarvam speakers: v3 roster only.
+// Sarvam speakers: v3 roster only. Sarvam TTS language: the 11-code bulbul roster, not the
+// 24-code STT roster — `as-IN` is valid for STT but not TTS.
 assert.doesNotThrow(() => assertSarvamSpeakerAllowed('sarvam', 'shubh'));
 assert.throws(() => assertSarvamSpeakerAllowed('sarvam', 'anushka'), /not available on bulbul:v3/);
+assert.doesNotThrow(() => assertSarvamTargetLanguageAllowed('sarvam', 'hi-IN'));
+assert.throws(() => assertSarvamTargetLanguageAllowed('sarvam', 'as-IN'), /not spoken by bulbul:v3/);
 // TTS pair rules.
 assert.doesNotThrow(() => assertTtsPairProvidedForMode('pipeline', 'cartesia', { voice_id: 'v1' }));
 assert.throws(() => assertTtsPairProvidedForMode('pipeline', 'cartesia', undefined), /assistant_tts_config is required/);

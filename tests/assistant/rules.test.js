@@ -12,6 +12,7 @@ const {
   assertSttModelIdAllowed,
   assertTtsModelIdAllowed,
   assertSarvamSpeakerAllowed,
+  assertSarvamTargetLanguageAllowed,
   assertTtsPairProvidedForMode,
   assertTtsPairForModeUpdate,
   GEMINI_LIVE_MODELS,
@@ -32,6 +33,12 @@ test('pickAssistantFields only keeps known assistant_* fields', () => {
     { assistant_end_call_enabled: false, assistant_end_call_url: null }
   );
   assert.ok(ASSISTANT_FIELDS.includes('assistant_interaction_config'));
+  // The end-call webhook object is forwarded and mirrored, not silently dropped.
+  assert.ok(ASSISTANT_FIELDS.includes('assistant_end_call_webhook'));
+  assert.deepStrictEqual(
+    pickAssistantFields({ assistant_end_call_webhook: { timeout_seconds: 60 } }),
+    { assistant_end_call_webhook: { timeout_seconds: 60 } }
+  );
 });
 
 test('rejectRetiredModeAlias throws on the retired assistant_llm_mode key', () => {
@@ -120,6 +127,17 @@ test('assertLlmModelAllowedInMode validates Gemini Live IDs, no longer free-form
   assert.throws(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-9-live-whatever'), /not a Gemini Live model/);
 });
 
+test('assertLlmModelAllowedInMode: the new Gemini default is in, the Vertex-only id is out', () => {
+  // Refreshed 2026-09-22: `gemini-3.8-live` is upstream's default; the plugin also lists
+  // `gemini-live-2.5-flash-native-audio` but rejects it (Vertex-only, vertexai=False).
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-3.8-live'));
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-3.8-live-extended-thinking'));
+  assert.throws(
+    () => assertLlmModelAllowedInMode('realtime', 'gemini', 'gemini-live-2.5-flash-native-audio'),
+    /is not a Gemini Live model/
+  );
+});
+
 test('assertLlmVoiceAllowedForProvider: closed Gemini roster, openai accepts non-Gemini names only', () => {
   assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('gemini', 'Puck'));
   assert.doesNotThrow(() => assertLlmVoiceAllowedForProvider('gemini', 'Charon'));
@@ -137,16 +155,29 @@ test('assertSttModelIdAllowed and assertTtsModelIdAllowed enforce the per-provid
   assert.doesNotThrow(() => assertSttModelIdAllowed('deepgram', 'nova-3'));
   assert.throws(() => assertSttModelIdAllowed('deepgram', 'nova-9'), /does not have a STT model called 'nova-9'/);
   assert.doesNotThrow(() => assertSttModelIdAllowed('sarvam', 'saaras:v3'));
-  assert.throws(() => assertSttModelIdAllowed('sarvam', 'saaras:v4'), /does not have a STT model called 'saaras:v4'/);
+  // Contract changed 2026-09-22: upstream now serves `saaras:v4` and sunset `saaras:v2.5` /
+  // `saarika:v2.5`, so this assertion is deliberately inverted from what it used to be.
+  assert.doesNotThrow(() => assertSttModelIdAllowed('sarvam', 'saaras:v4'));
+  assert.throws(() => assertSttModelIdAllowed('sarvam', 'saaras:v2.5'), /does not have a STT model called 'saaras:v2.5'/);
+  assert.throws(() => assertSttModelIdAllowed('sarvam', 'saarika:v2.5'), /does not have a STT model called 'saarika:v2.5'/);
   assert.throws(() => assertSttModelIdAllowed('openai', 'gpt-realtime-whisper'), /does not have a STT model called/);
   // `native` has no model field at all.
   assert.doesNotThrow(() => assertSttModelIdAllowed('native', 'anything'));
   assert.doesNotThrow(() => assertSttModelIdAllowed('deepgram', undefined));
 
   assert.doesNotThrow(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v3'));
+  assert.doesNotThrow(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v3_conversational'));
   assert.throws(() => assertTtsModelIdAllowed('elevenlabs', 'eleven_v9'), /does not have a TTS model called 'eleven_v9'/);
   // Pinned TTS providers take no model field.
   assert.doesNotThrow(() => assertTtsModelIdAllowed('cartesia', 'sonic-9'));
+});
+
+test('the refreshed Deepgram set: nova-3 variants in, the unpriced nova-2 out', () => {
+  for (const model of ['nova-3', 'nova-3-general', 'nova-3-multilingual', 'flux-general-en', 'flux-general-multi']) {
+    assert.doesNotThrow(() => assertSttModelIdAllowed('deepgram', model), `${model} should be accepted`);
+  }
+  // Deepgram stopped publishing a price for nova-2, and upstream prices every call it accepts.
+  assert.throws(() => assertSttModelIdAllowed('deepgram', 'nova-2'), /does not have a STT model called 'nova-2'/);
 });
 
 test('assertSarvamSpeakerAllowed enforces the bulbul:v3 roster', () => {
@@ -159,6 +190,16 @@ test('assertSarvamSpeakerAllowed enforces the bulbul:v3 roster', () => {
   // Only meaningful for Sarvam.
   assert.doesNotThrow(() => assertSarvamSpeakerAllowed('cartesia', 'anushka'));
   assert.doesNotThrow(() => assertSarvamSpeakerAllowed('sarvam', undefined));
+});
+
+test('assertSarvamTargetLanguageAllowed enforces the 11-code bulbul:v3 roster', () => {
+  assert.doesNotThrow(() => assertSarvamTargetLanguageAllowed('sarvam', 'hi-IN'));
+  assert.doesNotThrow(() => assertSarvamTargetLanguageAllowed('sarvam', 'en-IN'));
+  // A valid Sarvam STT code that bulbul:v3 does not speak — substituted with en-IN upstream.
+  assert.throws(() => assertSarvamTargetLanguageAllowed('sarvam', 'as-IN'), /not spoken by bulbul:v3/);
+  // Not our rule for another provider.
+  assert.doesNotThrow(() => assertSarvamTargetLanguageAllowed('cartesia', 'as-IN'));
+  assert.doesNotThrow(() => assertSarvamTargetLanguageAllowed('sarvam', undefined));
 });
 
 test('assertTtsPairProvidedForMode requires both halves in pipeline/cascade, never in realtime', () => {

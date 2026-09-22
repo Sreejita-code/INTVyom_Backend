@@ -65,15 +65,7 @@ const registerUser = async (userData) => {
   return await newUser.save();
 };
 
-// --- 2. Get API Key ---
-const getApiKeyByUserName = async (userName) => {
-  const user = await User.findOne({ user_name: userName });
-  if (!user) throw new Error('User not found');
-  if (!user.api_key) throw new Error('No API key found for this user');
-  return { user_id: user._id, api_key: user.api_key };
-};
-
-// --- 3. Login User ---
+// --- 2. Login User ---
 const loginUser = async (loginData) => {
   const { user_name, password } = loginData;
   const user = await User.findOne({ user_name });
@@ -88,6 +80,5 @@ const loginUser = async (loginData) => {
 
 module.exports = {
   registerUser,
-  getApiKeyByUserName,
   loginUser
 };

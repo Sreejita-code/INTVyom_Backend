@@ -9,6 +9,8 @@ const {
   CASCADE_STT_MODELS, 
   PIPELINE_STT_MODELS,
   GEMINI_LIVE_MODELS,
+  STT_MODELS_BY_PROVIDER,
+  assertSarvamTargetLanguageAllowed,
   SERVICE_TIERS,
   TOOL_CHOICES,
 } = require('./assistant.rules');
@@ -119,7 +121,7 @@ const COMPATIBILITY_MATRIX = {
           notes: 'The conversational LLM transcribes itself (OpenAI gpt-4o-mini-transcribe, or Gemini\'s own on a Gemini pipeline)'
         },
         sarvam: {
-          models: ['saaras:v3', 'saaras:v2.5', 'saarika:v2.5'],
+          models: STT_MODELS_BY_PROVIDER.sarvam,
           notes: 'Runs Sarvam Saras v3 as a parallel audio tap for native-script Indic transcripts'
         }
       },
@@ -129,11 +131,9 @@ const COMPATIBILITY_MATRIX = {
       providers: ['cartesia', 'sarvam', 'elevenlabs', 'mistral'],
       restrictions: {
         cartesia: {
-          models: ['sonic-3'],
           notes: 'Fixed model; sonic-3.5 requires LiveKit Cloud credentials'
         },
         sarvam: {
-          models: ['bulbul:v3'],
           notes: 'Speaker must be from bulbul:v3 roster'
         }
       }
@@ -145,7 +145,7 @@ const COMPATIBILITY_MATRIX = {
       restrictions: {
         gemini: {
           models: GEMINI_LIVE_MODELS,
-          notes: 'Validated against the plugin Live list; default model: gemini-2.5-flash-native-audio-preview-12-2025'
+          notes: 'Validated against the plugin Live list; default model: gemini-3.8-live'
         },
         openai: {
           models: OPENAI_REALTIME_MODELS,
@@ -179,33 +179,26 @@ const COMPATIBILITY_MATRIX = {
       forbidden: ['native'],
       restrictions: {
         sarvam: {
-          models: ['saaras:v3', 'saaras:v2.5', 'saarika:v2.5']
+          models: STT_MODELS_BY_PROVIDER.sarvam
         },
         cartesia: {
-          models: ['ink-whisper', 'ink-2']
+          models: STT_MODELS_BY_PROVIDER.cartesia
         },
         deepgram: {
-          models: ['nova-3', 'nova-2', 'flux-general-en', 'flux-general-multi']
+          models: STT_MODELS_BY_PROVIDER.deepgram
         },
         elevenlabs: {
-          models: ['scribe_v2_realtime', 'scribe_v2', 'scribe_v1']
+          models: STT_MODELS_BY_PROVIDER.elevenlabs
         },
         openai: {
-          models: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1']
+          models: STT_MODELS_BY_PROVIDER.openai
         }
       },
       notes: 'Native STT is rejected - there is no realtime model to transcribe itself'
     },
     tts: {
       providers: ['cartesia', 'sarvam', 'elevenlabs', 'mistral'],
-      restrictions: {
-        cartesia: {
-          models: ['sonic-3']
-        },
-        sarvam: {
-          models: ['bulbul:v3']
-        }
-      }
+      restrictions: {}
     }
   }
 };
@@ -582,17 +575,31 @@ const validateAssistantConfiguration = (config) => {
     }
   }
   
-  // Validate language codes for TTS
+  // Validate language codes for TTS. Sarvam's TTS roster (11 bulbul:v3 codes) is much shorter
+  // than its 24-code STT roster, so it is checked by the shared Sarvam helper instead of
+  // VALID_LANGUAGE_CODES.sarvam: 'as-IN' is a valid Sarvam STT code but is substituted with
+  // 'en-IN' for TTS, so the assistant would speak a language nobody chose.
   if (assistant_tts_config.target_language_code) {
-    const ttsLanguageValidation = validateLanguageCodes(
-      ttsProvider, 
-      assistant_tts_config.target_language_code
-    );
-    if (!ttsLanguageValidation.isValid) {
-      return {
-        isValid: false,
-        message: ttsLanguageValidation.message
-      };
+    if (String(ttsProvider || '').toLowerCase() === 'sarvam') {
+      try {
+        assertSarvamTargetLanguageAllowed(ttsProvider, assistant_tts_config.target_language_code);
+      } catch (err) {
+        return {
+          isValid: false,
+          message: err.message
+        };
+      }
+    } else {
+      const ttsLanguageValidation = validateLanguageCodes(
+        ttsProvider, 
+        assistant_tts_config.target_language_code
+      );
+      if (!ttsLanguageValidation.isValid) {
+        return {
+          isValid: false,
+          message: ttsLanguageValidation.message
+        };
+      }
     }
   }
   

@@ -28,10 +28,14 @@ const OPENAI_REALTIME_MODELS = [
 // Gemini Live model IDs ARE validated, against the installed plugin's own list. The Live API is
 // a much smaller and slower-moving set than the Gemini chat models, and a chat id such as
 // `gemini-2.5-flash` is not refused by the plugin — it opens a socket the API then closes.
+// The default is `gemini-3.8-live`. `gemini-live-2.5-flash-native-audio` is the Vertex AI id
+// and upstream answers 422 (`ValueError: … is a VertexAI model, but vertexai=False`), so it is
+// deliberately absent.
 const GEMINI_LIVE_MODELS = [
-  'gemini-2.5-flash-native-audio-preview-12-2025',
-  'gemini-live-2.5-flash-native-audio',
+  'gemini-3.8-live',
+  'gemini-3.8-live-extended-thinking',
   'gemini-3.1-flash-live-preview',
+  'gemini-2.5-flash-native-audio-preview-12-2025',
 ];
 
 // The 30 Gemini Live voices. Closed set in the installed plugin — a name outside it cannot work.
@@ -90,6 +94,7 @@ const ASSISTANT_FIELDS = [
   'assistant_end_call_trigger_phrase',
   'assistant_end_call_agent_message',
   'assistant_end_call_url',
+  'assistant_end_call_webhook',
   'assistant_greeting_audio',
 ];
 
@@ -218,10 +223,13 @@ const assertLlmVoiceAllowedForProvider = (provider, voice) => {
 // Per-provider STT model ids. Mirrors the upstream speech model sets — a typo such as `nova-9`
 // used to be stored happily and then end the job at call start. Providers whose model is pinned
 // in the factory (none here) take no `model` field at all.
+//
+// `saaras:v2.5` and `saarika:v2.5` were sunset by Sarvam; `nova-2` lost its published price and
+// upstream prices every call it accepts — all three are a 422 upstream, so they are absent.
 const STT_MODELS_BY_PROVIDER = {
-  sarvam: ['saaras:v3', 'saaras:v2.5', 'saarika:v2.5'],
+  sarvam: ['saaras:v3', 'saaras:v4'],
   cartesia: ['ink-whisper', 'ink-2'],
-  deepgram: ['nova-3', 'nova-2', 'flux-general-en', 'flux-general-multi'],
+  deepgram: ['nova-3', 'nova-3-general', 'nova-3-multilingual', 'flux-general-en', 'flux-general-multi'],
   elevenlabs: ['scribe_v2_realtime', 'scribe_v2', 'scribe_v1'],
   openai: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'],
 };
@@ -241,9 +249,11 @@ const assertSttModelIdAllowed = (provider, model) => {
 };
 
 // TTS model ids. Only ElevenLabs takes a `model` key; the other providers pin theirs in the
-// factory (Cartesia `sonic-3`, Sarvam `bulbul:v3`, Mistral `voxtral-mini-tts-2603`).
+// factory (Cartesia `sonic-3`, Sarvam `bulbul:v3`, Mistral `voxtral-mini-tts-2603`). Neither v3
+// model reads `voice_settings.speed` — only the multilingual/turbo/flash models do.
 const ELEVENLABS_TTS_MODELS = [
   'eleven_v3',
+  'eleven_v3_conversational',
   'eleven_multilingual_v2',
   'eleven_turbo_v2_5',
   'eleven_flash_v2_5',
@@ -280,6 +290,23 @@ const assertSarvamSpeakerAllowed = (ttsModel, speaker) => {
     `Sarvam speaker '${speaker}' is not available on bulbul:v3 — v2 and v3 share no speaker ` +
     `names; bulbul:v3 speakers are: ${quotedList(SARVAM_SPEAKERS)}. Update ` +
     'assistant_tts_config.speaker.'
+  );
+};
+
+// Bulbul v3 speaks 11 languages — a much shorter list than the 24 Sarvam STT codes, and the
+// two are easy to confuse because both are BCP-47 Indic. An unlisted code is replaced with
+// `en-IN` upstream, so the assistant would speak a language nobody chose.
+const SARVAM_TTS_LANGUAGES = [
+  'bn-IN', 'en-IN', 'gu-IN', 'hi-IN', 'kn-IN', 'ml-IN', 'mr-IN', 'od-IN', 'pa-IN', 'ta-IN', 'te-IN',
+];
+
+const assertSarvamTargetLanguageAllowed = (ttsModel, code) => {
+  if (code === undefined || code === null || code === '') return;
+  if (String(ttsModel || '').toLowerCase() !== 'sarvam') return;
+  if (SARVAM_TTS_LANGUAGES.includes(String(code))) return;
+  throw badRequest(
+    `Sarvam target_language_code '${code}' is not spoken by bulbul:v3 — choose one of: ` +
+    `${quotedList(SARVAM_TTS_LANGUAGES)}. Note 'en-IN', not 'en-US'.`
   );
 };
 
@@ -393,6 +420,7 @@ module.exports = {
   STT_MODELS_BY_PROVIDER,
   ELEVENLABS_TTS_MODELS,
   SARVAM_SPEAKERS,
+  SARVAM_TTS_LANGUAGES,
   CASCADE_STT_MODELS,
   PIPELINE_STT_MODELS,
   assertLlmModelAllowedInMode,
@@ -400,6 +428,7 @@ module.exports = {
   assertSttModelIdAllowed,
   assertTtsModelIdAllowed,
   assertSarvamSpeakerAllowed,
+  assertSarvamTargetLanguageAllowed,
   assertTtsPairProvidedForMode,
   assertTtsPairForModeUpdate,
   rejectRetiredModeAlias,

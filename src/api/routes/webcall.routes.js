@@ -10,13 +10,14 @@ const router = express.Router();
 
 // Generate web call token (AI agent call).
 router.post('/get-token', asyncHandler(async (req, res) => {
-  const { user_id, assistant_id } = req.body || {};
+  const { assistant_id } = req.body || {};
 
-  if (!user_id || !assistant_id) {
-    throw httpError(400, 'user_id and assistant_id are required');
+  if (!assistant_id) {
+    throw httpError(400, 'assistant_id is required');
   }
 
-  const result = await webCallService.generateWebCallToken(req.body || {}).catch(keepStatus(500));
+  // Identity comes from the bearer key, not the payload.
+  const result = await webCallService.generateWebCallToken({ ...(req.body || {}), user_id: req.user._id }).catch(keepStatus(500));
   res.status(200).json(result);
 }));
 

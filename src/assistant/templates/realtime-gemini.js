@@ -1,6 +1,8 @@
 /**
  * Realtime Gemini Template
- * Uses Gemini realtime model for full duplex conversation
+ * Uses Gemini realtime model for full duplex conversation.
+ * `gemini-3.8-live` is the upstream default — the stable low-latency line Google names for
+ * voice agents, and the one every platform feature (greeting, farewell, re-prompts) works on.
  */
 module.exports = {
   name: "Realtime Gemini Assistant",
@@ -8,7 +10,7 @@ module.exports = {
   mode: "realtime",
   llm_config: {
     provider: "gemini",
-    model: "gemini-3.1-flash-live-preview",
+    model: "gemini-3.8-live",
     voice: "Puck"
   },
   interaction_config: {

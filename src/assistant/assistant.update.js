@@ -18,6 +18,7 @@ const {
   assertSttModelIdAllowed,
   assertTtsModelIdAllowed,
   assertSarvamSpeakerAllowed,
+  assertSarvamTargetLanguageAllowed,
   assertTtsPairForModeUpdate,
   inferTargetModeForUpdate,
   resolvePairForUpdate,
@@ -46,6 +47,7 @@ const LOCAL_FIELD_BY_PAYLOAD_KEY = {
   assistant_end_call_trigger_phrase: 'end_call_trigger_phrase',
   assistant_end_call_agent_message: 'end_call_agent_message',
   assistant_end_call_url: 'end_call_url',
+  assistant_end_call_webhook: 'end_call_webhook',
   assistant_greeting_audio: 'greeting_audio',
 };
 
@@ -158,6 +160,13 @@ const updateAssistant = async (userId, assistantId, updateData) => {
       ...updateData.assistant_llm_config
     };
   }
+  // The stored TTS config is not re-validated on an edit that does not resend it. A stored
+  // target_language_code that is now outside the bulbul:v3 roster must not block a rename — the
+  // speech asserts below fire only on values the caller actually sends, so the repair path stays
+  // open (CLAUDE.md §6).
+  if (updateData.assistant_tts_config === undefined) {
+    delete mergedConfig.assistant_tts_config;
+  }
 
   const validation = validateAssistantConfiguration(mergedConfig);
   if (!validation.isValid) {
@@ -220,6 +229,12 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     assertSarvamSpeakerAllowed(
       updateData.assistant_tts_model ?? existingAssistant?.tts_model,
       updateData.assistant_tts_config?.speaker
+    );
+    // Request-only, like the speaker assert: a stored out-of-roster code must not block a rename,
+    // but a value the caller sends now is refused with a readable 400.
+    assertSarvamTargetLanguageAllowed(
+      updateData.assistant_tts_model ?? existingAssistant?.tts_model,
+      updateData.assistant_tts_config?.target_language_code
     );
     assertSttModelIdAllowed(
       updateData.assistant_stt_model ?? existingAssistant?.stt_model,

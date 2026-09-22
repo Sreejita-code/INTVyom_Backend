@@ -1,7 +1,7 @@
 const express = require('express');
 const asyncHandler = require('../../core/middleware/asyncHandler');
 const authService = require('../../auth/auth.service');
-const { httpError, preserveStatus, mapNotFoundTo404, mapInvalidCredentials } = require('./common');
+const { httpError, preserveStatus, mapInvalidCredentials } = require('./common');
 
 const router = express.Router();
 
@@ -21,15 +21,9 @@ router.post('/signup', asyncHandler(async (req, res) => {
   });
 }));
 
-// Fetch stored API key by username.
-router.get('/get_api', asyncHandler(async (req, res) => {
-  const { user_name } = req.query;
-  if (!user_name) throw httpError(400, 'user_name parameter is required');
-
-  const { user_id, api_key } = await authService.getApiKeyByUserName(user_name).catch(mapNotFoundTo404);
-
-  res.status(200).json({ user_id, user_name, api_key });
-}));
+// There is deliberately no uncredentialed key-lookup endpoint. `POST /login` (password) and
+// `POST /signup` are the only ways to obtain an `api_key`; the previous GET /get_api returned
+// the tenant's upstream key to anyone who knew a username and has been removed.
 
 // Login with user_name and password.
 router.post('/login', asyncHandler(async (req, res) => {

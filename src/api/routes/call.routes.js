@@ -9,24 +9,22 @@ const router = express.Router();
 // service, upstream rejections passthrough) — previously EVERY failure was
 // flattened to a client-facing 400.
 router.post('/outbound', asyncHandler(async (req, res) => {
-  const { user_id, assistant_id, trunk_id, to_number } = req.body || {};
+  const { assistant_id, trunk_id, to_number } = req.body || {};
 
-  if (!user_id || !assistant_id || !trunk_id || !to_number) {
-    throw httpError(400, 'user_id, assistant_id, trunk_id, and to_number are all required');
+  if (!assistant_id || !trunk_id || !to_number) {
+    throw httpError(400, 'assistant_id, trunk_id, and to_number are all required');
   }
 
-  const result = await callService.makeOutboundCall(req.body || {});
+  // Identity comes from the bearer key, not the payload.
+  const result = await callService.makeOutboundCall({ ...(req.body || {}), user_id: req.user._id });
   res.status(200).json(result);
 }));
 
 // Poll the dispatch state of the queue_id returned by POST /outbound.
 router.get('/queue/:queue_id', asyncHandler(async (req, res) => {
-  const { user_id } = req.query;
   const { queue_id } = req.params;
 
-  if (!user_id) throw httpError(400, 'user_id query parameter is required');
-
-  const result = await callService.getQueueStatus(user_id, queue_id);
+  const result = await callService.getQueueStatus(req.user._id, queue_id);
   res.status(200).json(result);
 }));
 

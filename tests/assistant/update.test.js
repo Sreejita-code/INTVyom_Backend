@@ -248,6 +248,32 @@ test('an unrelated rename on a legacy row without TTS stays editable', async () 
   assert.deepStrictEqual(sent.patch.data, { assistant_name: 'Renamed' });
 });
 
+test('a rename-only PATCH on a row holding a dead STT model still succeeds', async () => {
+  // The repair path must stay open: the request never resends stt_config.model, and the model-id
+  // asserts only fire on values actually present in the request.
+  storedAssistant.stt_config = { model: 'saaras:v2.5', language: 'hi-IN' };
+
+  await updateAssistant('u1', 'ext-1', { assistant_name: 'Renamed' });
+  assert.deepStrictEqual(sent.patch.data, { assistant_name: 'Renamed' });
+});
+
+test('a rename-only PATCH on a row holding an out-of-roster Sarvam TTS language still succeeds', async () => {
+  // The same guarantee for the language split: a stored 'as-IN' (a valid Sarvam STT code, not a
+  // bulbul:v3 code) must not lock the owner out of renaming.
+  storedAssistant.tts_config = { speaker: 'shubh', target_language_code: 'as-IN' };
+
+  await updateAssistant('u1', 'ext-1', { assistant_name: 'Renamed' });
+  assert.deepStrictEqual(sent.patch.data, { assistant_name: 'Renamed' });
+
+  // Resending the offending field is rejected — the fix is a valid code, not an omission.
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', {
+      assistant_tts_config: { speaker: 'shubh', target_language_code: 'as-IN' },
+    }),
+    /not spoken by bulbul:v3/
+  );
+});
+
 test('false and null are mirrored locally; undefined is not', async () => {
   await updateAssistant('u1', 'ext-1', {
     assistant_end_call_enabled: false,

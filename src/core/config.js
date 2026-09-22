@@ -1,4 +1,6 @@
+const dns = require('dns');
 require('dotenv').config();
+dns.setServers(['8.8.8.8', '1.1.1.1']);
 
 /**
  * Central Settings singleton — the only place process.env is read.

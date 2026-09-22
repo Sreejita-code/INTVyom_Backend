@@ -8,13 +8,14 @@ const router = express.Router();
 // Store or update provider API key. Validation and unknown-service rejections
 // carry their own status — everything else flows through centrally.
 router.post('/store', asyncHandler(async (req, res) => {
-  const { user_id, service_name, api_key } = req.body || {};
+  const { service_name, api_key } = req.body || {};
 
-  if (!user_id || !service_name || !api_key) {
-    throw httpError(400, 'user_id, service_name, and api_key are required');
+  if (!service_name || !api_key) {
+    throw httpError(400, 'service_name and api_key are required');
   }
 
-  const { integration, resync } = await integrationService.storeApiKey(req.body || {});
+  // Identity comes from the bearer key, not the payload.
+  const { integration, resync } = await integrationService.storeApiKey({ ...(req.body || {}), user_id: req.user._id });
 
   res.status(200).json({
     success: true,
@@ -32,13 +33,13 @@ router.post('/store', asyncHandler(async (req, res) => {
 
 // Retrieve provider API key.
 router.get('/get', asyncHandler(async (req, res) => {
-  const { user_id, service_name } = req.query;
+  const { service_name } = req.query;
 
-  if (!user_id || !service_name) {
-    throw httpError(400, 'user_id and service_name query parameters are required');
+  if (!service_name) {
+    throw httpError(400, 'service_name query parameter is required');
   }
 
-  const result = await integrationService.getApiKey(user_id, service_name).catch(mapNotFoundTo404);
+  const result = await integrationService.getApiKey(req.user._id, service_name).catch(mapNotFoundTo404);
 
   res.status(200).json({
     success: true,
@@ -52,12 +53,12 @@ router.get('/get', asyncHandler(async (req, res) => {
 
 // Current re-sync job status.
 router.get('/resync-status', asyncHandler(async (req, res) => {
-  const { user_id, service_name } = req.query;
-  if (!user_id || !service_name) {
-    throw httpError(400, 'user_id and service_name query parameters are required');
+  const { service_name } = req.query;
+  if (!service_name) {
+    throw httpError(400, 'service_name query parameter is required');
   }
 
-  const job = await integrationService.getResyncStatus(user_id, service_name);
+  const job = await integrationService.getResyncStatus(req.user._id, service_name);
   if (!job) throw httpError(404, 'No re-sync job found for this user and service');
 
   res.status(200).json({ success: true, data: job });
@@ -65,12 +66,12 @@ router.get('/resync-status', asyncHandler(async (req, res) => {
 
 // Manually (re-)trigger the re-sync for one provider.
 router.post('/resync', asyncHandler(async (req, res) => {
-  const { user_id, service_name } = req.body || {};
-  if (!user_id || !service_name) {
-    throw httpError(400, 'user_id and service_name are required');
+  const { service_name } = req.body || {};
+  if (!service_name) {
+    throw httpError(400, 'service_name is required');
   }
 
-  const result = await integrationService.startResyncForUser(user_id, service_name);
+  const result = await integrationService.startResyncForUser(req.user._id, service_name);
   res.status(202).json({ success: true, resync: result });
 }));
 

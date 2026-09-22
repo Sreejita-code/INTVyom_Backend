@@ -17,6 +17,7 @@ const {
   assertSttModelIdAllowed,
   assertTtsModelIdAllowed,
   assertSarvamSpeakerAllowed,
+  assertSarvamTargetLanguageAllowed,
   assertTtsPairProvidedForMode,
 } = require('./assistant.rules');
 const {
@@ -53,6 +54,7 @@ const createAssistant = async (data) => {
     assistant_end_call_trigger_phrase,
     assistant_end_call_agent_message,
     assistant_end_call_url,
+    assistant_end_call_webhook,
     assistant_greeting_audio
   } = data;
 
@@ -95,6 +97,7 @@ const createAssistant = async (data) => {
     assertSttModelAllowedInMode(mode, assistant_stt_model);
     assertTtsPairProvidedForMode(mode, assistant_tts_model, assistant_tts_config);
     assertSarvamSpeakerAllowed(assistant_tts_model, assistant_tts_config?.speaker);
+    assertSarvamTargetLanguageAllowed(assistant_tts_model, assistant_tts_config?.target_language_code);
     assertSttModelIdAllowed(assistant_stt_model, assistant_stt_config?.model);
     assertTtsModelIdAllowed(assistant_tts_model, assistant_tts_config?.model);
 
@@ -132,6 +135,7 @@ const createAssistant = async (data) => {
   if (assistant_end_call_trigger_phrase) externalPayload.assistant_end_call_trigger_phrase = assistant_end_call_trigger_phrase;
   if (assistant_end_call_agent_message) externalPayload.assistant_end_call_agent_message = assistant_end_call_agent_message;
   if (assistant_end_call_url) externalPayload.assistant_end_call_url = assistant_end_call_url;
+  if (assistant_end_call_webhook !== undefined) externalPayload.assistant_end_call_webhook = assistant_end_call_webhook;
   if (assistant_greeting_audio) externalPayload.assistant_greeting_audio = assistant_greeting_audio;
 
   const externalResponseData = await callExternal(user.api_key, {
@@ -161,6 +165,7 @@ const createAssistant = async (data) => {
     end_call_trigger_phrase: assistant_end_call_trigger_phrase,
     end_call_agent_message: assistant_end_call_agent_message,
     end_call_url: assistant_end_call_url,
+    end_call_webhook: assistant_end_call_webhook,
     greeting_audio: assistant_greeting_audio
   });
 

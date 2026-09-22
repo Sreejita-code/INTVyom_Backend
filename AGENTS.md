@@ -21,6 +21,11 @@ what the resulting code must look like.
 - Express routes live in `src/api/routes/`; business logic in `src/<domain>/`;
   external HTTP clients in `src/services/<upstream>/`; DB access in
   `src/core/db/`.
+- Identity comes from `req.user`, set by
+  `src/core/middleware/requireAuth.js` from the `Authorization: Bearer <api_key>`
+  header. Routes never read identity from the payload — a `user_id` in the body or
+  query string is ignored. Only `POST /api/auth/signup` and `POST /api/auth/login`
+  are unauthenticated.
 - All configuration is read in `src/core/config.js` — never `process.env`
   elsewhere.
 - Error handling is centralized: route handlers delegate failures via

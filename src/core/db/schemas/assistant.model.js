@@ -53,7 +53,13 @@ const AssistantSchema = new mongoose.Schema({
   end_call_enabled: { type: Boolean, default: false },
   end_call_trigger_phrase: { type: String },
   end_call_agent_message: { type: String },
-  end_call_url: { type: String } 
+  end_call_url: { type: String },
+  // Upstream merges this object key by key, like interaction_config. `null` on a key means
+  // "fall back to the server default" (END_CALL_WEBHOOK_TIMEOUT 30s, END_CALL_WEBHOOK_ATTEMPTS 3).
+  end_call_webhook: {
+    timeout_seconds: { type: Number, default: null },
+    attempts: { type: Number, default: null }
+  }
 }, { timestamps: true }); 
 
 module.exports = mongoose.model('Assistant', AssistantSchema);

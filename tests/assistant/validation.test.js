@@ -117,6 +117,28 @@ test('an explicitly null config is nothing to validate, not a crash', () => {
   );
 });
 
+test('the Sarvam TTS language roster is separate from the 24-code Sarvam STT roster', () => {
+  // 'as-IN' is a valid Sarvam STT code but bulbul:v3 does not speak it — an unlisted code is
+  // substituted with en-IN upstream, so the assistant would speak a language nobody chose.
+  const ttsOnly = validateAssistantConfiguration({
+    assistant_mode: 'pipeline',
+    assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5' },
+    assistant_tts_model: 'sarvam',
+    assistant_tts_config: { speaker: 'shubh', target_language_code: 'as-IN' },
+  });
+  assert.strictEqual(ttsOnly.isValid, false);
+  assert.match(ttsOnly.message, /not spoken by bulbul:v3/);
+
+  // The same code stays valid on the STT half, which keeps the 24-code roster.
+  const sttOnly = validateAssistantConfiguration({
+    assistant_mode: 'pipeline',
+    assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5' },
+    assistant_stt_model: 'sarvam',
+    assistant_stt_config: { language: 'as-IN' },
+  });
+  assert.strictEqual(sttOnly.isValid, true);
+});
+
 test('a language code inside a present config is still validated', () => {
   const result = validateAssistantConfiguration({
     assistant_mode: 'pipeline',

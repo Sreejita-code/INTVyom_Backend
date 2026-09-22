@@ -16,6 +16,8 @@ const analyticsRoutes = require('./api/routes/analytics.routes');
 const passthroughRoutes = require('./api/routes/passthrough.routes');
 const audioRoutes = require('./api/routes/audio.routes');
 const meetingRoutes = require('./api/routes/meeting.routes');
+const requireAuth = require('./core/middleware/requireAuth');
+const createMcpRouter = require('./mcp/swagger-mcp');
 const errorHandler = require('./core/middleware/errorHandler');
 const notFound = require('./core/middleware/notFound');
 
@@ -35,8 +37,20 @@ const createApp = () => {
   const swaggerDocument = YAML.load(path.join(__dirname, '..', 'swagger.yaml'));
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-  // Mount Modules
+  // MCP server exposing this API's own contracts, from the same parsed document. Mounted outside
+  // /api so requireAuth does not cover it — it serves the same content /api-docs already does.
+  app.use('/mcp', createMcpRouter(swaggerDocument));
+
+  // Mount Modules.
+  // Auth first, and deliberately unauthenticated: signup issues the key and login proves the
+  // password — those are the two ways a caller can obtain the credential this proxy expects.
   app.use('/api/auth', authRoutes);
+
+  // Everything else under /api requires the bearer key. Mounted before the routers so an
+  // unauthenticated request never reaches a handler (and unknown /api paths answer 401 too,
+  // before the 404 fallback).
+  app.use('/api', requireAuth);
+
   app.use('/api/assistant', assistantRoutes);
   app.use('/api/sip', sipRoutes);
   app.use('/api/call', callRoutes);

@@ -10,7 +10,8 @@ const router = express.Router();
 // upstream rejections passthrough) — nothing to remap here.
 
 router.post('/create', asyncHandler(async (req, res) => {
-  const assistant = await assistantService.createAssistant(req.body || {});
+  // Identity comes from the bearer key, not the payload — a body user_id is overridden.
+  const assistant = await assistantService.createAssistant({ ...(req.body || {}), user_id: req.user._id });
 
   res.status(201).json({
     message: 'Assistant created successfully',
@@ -19,9 +20,7 @@ router.post('/create', asyncHandler(async (req, res) => {
 }));
 
 router.get('/list', asyncHandler(async (req, res) => {
-  const { user_id, page, limit, assistant_name, start_date, end_date, sort_by, sort_order } = req.query;
-
-  if (!user_id) throw httpError(400, 'user_id query parameter is required');
+  const { page, limit, assistant_name, start_date, end_date, sort_by, sort_order } = req.query;
 
   const queryParams = {};
   if (page) queryParams.page = parseInt(page, 10);
@@ -38,49 +37,41 @@ router.get('/list', asyncHandler(async (req, res) => {
   if (sort_by) queryParams.sort_by = sort_by;
   if (sort_order) queryParams.sort_order = sort_order;
 
-  const result = await assistantService.listAssistants(user_id, queryParams);
+  const result = await assistantService.listAssistants(req.user._id, queryParams);
   res.status(200).json(result);
 }));
 
 router.get('/details/:id', asyncHandler(async (req, res) => {
-  const { user_id } = req.query;
   const { id } = req.params;
 
-  if (!user_id) throw httpError(400, 'user_id query parameter is required');
   if (!id) throw httpError(400, 'Assistant ID is required');
 
-  const result = await assistantService.getAssistantDetails(user_id, id);
+  const result = await assistantService.getAssistantDetails(req.user._id, id);
   res.status(200).json(result);
 }));
 
 router.patch('/update/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { user_id, ...updateData } = req.body || {};
 
-  if (!user_id) throw httpError(400, 'user_id is required in the request body');
   if (!id) throw httpError(400, 'Assistant ID is required');
 
-  const result = await assistantService.updateAssistant(user_id, id, updateData);
+  const result = await assistantService.updateAssistant(req.user._id, id, req.body || {});
   res.status(200).json(result);
 }));
 
 router.delete('/delete/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
-  // user_id can be sent in query string or body depending on frontend implementation
-  const userId = req.query.user_id || req.body?.user_id;
 
-  if (!userId) throw httpError(400, 'user_id is required');
   if (!id) throw httpError(400, 'Assistant ID is required');
 
-  const result = await assistantService.deleteAssistant(userId, id);
+  const result = await assistantService.deleteAssistant(req.user._id, id);
   res.status(200).json(result);
 }));
 
 router.get('/call-logs/:id', asyncHandler(async (req, res) => {
   const { id } = req.params; // The assistant ID
-  // Extract user_id and all possible LiveKit query parameters
+  // All possible LiveKit query parameters
   const {
-    user_id,
     page,
     limit,
     start_date,
@@ -89,7 +80,7 @@ router.get('/call-logs/:id', asyncHandler(async (req, res) => {
     sort_order
   } = req.query;
 
-  if (!user_id || !id) throw httpError(400, 'user_id and assistant id are required');
+  if (!id) throw httpError(400, 'assistant id is required');
 
   // Build queryParams object dynamically, only including defined parameters
   const queryParams = {};
@@ -100,53 +91,48 @@ router.get('/call-logs/:id', asyncHandler(async (req, res) => {
   if (sort_by) queryParams.sort_by = sort_by;
   if (sort_order) queryParams.sort_order = sort_order;
 
-  const result = await assistantService.getCallLogs(user_id, id, queryParams);
+  const result = await assistantService.getCallLogs(req.user._id, id, queryParams);
   res.status(200).json(result);
 }));
 
 router.get('/billable-minutes/:id', asyncHandler(async (req, res) => {
   const { id } = req.params; // The assistant ID
   const {
-    user_id,
     to_number,
     start_date,
     end_date
   } = req.query;
 
-  if (!user_id || !id) throw httpError(400, 'user_id and assistant id are required');
+  if (!id) throw httpError(400, 'assistant id is required');
   if (!to_number) throw httpError(400, 'to_number query parameter is required');
 
   const queryParams = { to_number };
   if (start_date) queryParams.start_date = start_date;
   if (end_date) queryParams.end_date = end_date;
 
-  const result = await assistantService.getTotalBillableDuration(user_id, id, queryParams);
+  const result = await assistantService.getTotalBillableDuration(req.user._id, id, queryParams);
   res.status(200).json(result);
 }));
 
 router.get('/platform-billable-minutes', asyncHandler(async (req, res) => {
-  const { user_id, start_date, end_date } = req.query;
-
-  if (!user_id) throw httpError(400, 'user_id query parameter is required');
+  const { start_date, end_date } = req.query;
 
   const queryParams = {};
   if (start_date) queryParams.start_date = start_date;
   if (end_date) queryParams.end_date = end_date;
 
-  const result = await assistantService.getPlatformWiseBillableMinutes(user_id, queryParams);
+  const result = await assistantService.getPlatformWiseBillableMinutes(req.user._id, queryParams);
   res.status(200).json(result);
 }));
 
 router.get('/platform-billable-minutes/download', asyncHandler(async (req, res) => {
-  const { user_id, start_date, end_date } = req.query;
-
-  if (!user_id) throw httpError(400, 'user_id query parameter is required');
+  const { start_date, end_date } = req.query;
 
   const queryParams = {};
   if (start_date) queryParams.start_date = start_date;
   if (end_date) queryParams.end_date = end_date;
 
-  const result = await assistantService.getPlatformWiseBillableMinutes(user_id, queryParams);
+  const result = await assistantService.getPlatformWiseBillableMinutes(req.user._id, queryParams);
   const workbook = buildPlatformBillableWorkbook(result);
 
   // Set response headers to trigger file download in the browser
@@ -164,11 +150,7 @@ router.get('/platform-billable-minutes/download', asyncHandler(async (req, res) 
 }));
 
 router.post('/validate', asyncHandler(async (req, res) => {
-  const { user_id, ...assistantConfig } = req.body || {};
-
-  if (!user_id) throw httpError(400, 'user_id is required in the request body');
-
-  const result = await assistantService.validateAssistant(user_id, assistantConfig);
+  const result = await assistantService.validateAssistant(req.user._id, req.body || {});
   res.status(200).json(result);
 }));
 
@@ -203,10 +185,8 @@ router.get('/templates/:id', asyncHandler(async (req, res) => {
 router.post('/templates/:id/apply', asyncHandler(async (req, res) => {
   const templateService = require('../../assistant/template.service');
   const { id } = req.params;
-  const { user_id, ...overrides } = req.body || {};
-  
-  if (!user_id) throw httpError(400, 'user_id is required in the request body');
-  
+  const overrides = req.body || {};
+
   const templateConfig = templateService.getTemplateConfiguration(id);
   
   if (!templateConfig) {
@@ -219,8 +199,8 @@ router.post('/templates/:id/apply', asyncHandler(async (req, res) => {
   // Remove template-specific fields that shouldn't be sent to create
   delete finalConfig.template_id;
   
-  // Add user_id to the configuration
-  finalConfig.user_id = user_id;
+  // Identity comes from the bearer key, not the payload.
+  finalConfig.user_id = req.user._id;
   
   // Create the assistant with the template configuration
   const assistant = await assistantService.createAssistant(finalConfig);

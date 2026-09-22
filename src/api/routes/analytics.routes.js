@@ -1,7 +1,6 @@
 const express = require('express');
 const asyncHandler = require('../../core/middleware/asyncHandler');
 const analyticsService = require('../../analytics/analytics.service');
-const { httpError } = require('./common');
 
 const router = express.Router();
 
@@ -24,10 +23,9 @@ const ROUTES = {
 };
 
 const makeHandler = ([path, keys]) => asyncHandler(async (req, res) => {
-  const userId = req.query.user_id;
-  if (!userId) throw httpError(400, 'user_id query parameter is required');
-
-  const result = await analyticsService.proxyAnalyticsRequest(path, userId, pickQueryParams(req.query, keys));
+  // Identity comes from the bearer key. pickQueryParams only forwards the allowed keys, so a
+  // user_id in the query string is never passed upstream.
+  const result = await analyticsService.proxyAnalyticsRequest(path, req.user._id, pickQueryParams(req.query, keys));
   res.status(200).json(result);
 });
 

@@ -10,13 +10,9 @@ const router = express.Router();
  * Puts an assistant into a video meeting as an ordinary participant.
  */
 router.post('/join', asyncHandler(async (req, res) => {
-  const { user_id, assistant_id, meeting_url, platform, bot_display_name, metadata } = req.body || {};
+  const { assistant_id, meeting_url, platform, bot_display_name, metadata } = req.body || {};
 
-  // Validate required fields
-  if (!user_id) {
-    throw httpError(400, 'user_id is required');
-  }
-
+  // Validate required fields. Identity comes from the bearer key, not the payload.
   if (!assistant_id) {
     throw httpError(400, 'assistant_id is required');
   }
@@ -26,7 +22,7 @@ router.post('/join', asyncHandler(async (req, res) => {
   }
 
   const result = await meetingService.joinMeetingCall({
-    user_id,
+    user_id: req.user._id,
     assistant_id,
     meeting_url,
     platform,
