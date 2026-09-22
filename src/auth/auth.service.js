@@ -20,10 +20,14 @@ const requestExternalApiKey = (user_name, org_name, user_email) =>
 const registerUser = async (userData) => {
   const { user_name, org_name, user_email, password } = userData;
 
-  // 1. Check if user already exists in OUR database
+  // 1. Check if user already exists in OUR database. Both checks run before key issuance, so a
+  // rejected signup never mints an upstream key.
   const existingUser = await User.findOne({ user_email });
   if (existingUser) {
     throw new Error('User with this email already exists');
+  }
+  if (await User.findOne({ user_name })) {
+    throw new Error('User name is already taken');
   }
 
   // 2. Hash the password
@@ -62,7 +66,16 @@ const registerUser = async (userData) => {
     api_key: externalApiKey // Will be null if external call failed
   });
 
-  return await newUser.save();
+  try {
+    return await newUser.save();
+  } catch (error) {
+    // Two concurrent signups can both pass the checks above; the unique indexes catch the loser.
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0];
+      throw new Error(field === 'user_email' ? 'User with this email already exists' : 'User name is already taken');
+    }
+    throw error;
+  }
 };
 
 // --- 2. Login User ---

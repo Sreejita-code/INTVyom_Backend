@@ -100,15 +100,35 @@ test('exampleFromSchema prefers example, then enum, then a type stub', () => {
   assert.deepStrictEqual(exampleFromSchema({ type: 'array', items: { type: 'boolean' } }), [false]);
 });
 
+test('exampleFromSchema takes the first oneOf branch and merges allOf', () => {
+  const oneOf = { oneOf: [
+    { type: 'object', properties: { speaker: { example: 'shubh' } } },
+    { type: 'object', properties: { voice_id: { example: 'v1' } } }
+  ] };
+  // One provider's config, never a blend of every provider's keys.
+  assert.deepStrictEqual(exampleFromSchema(oneOf), { speaker: 'shubh' });
+
+  const allOf = { allOf: [{ properties: { a: { example: 1 } } }, { type: 'object', properties: { b: { example: 2 } } }] };
+  assert.deepStrictEqual(exampleFromSchema(allOf), { a: 1, b: 2 });
+});
+
 test('findEndpoint matches exactly and returns null otherwise', () => {
   assert.ok(findEndpoint(doc, '/api/assistant/create', 'post'));
   assert.strictEqual(findEndpoint(doc, '/nope', 'get'), null);
 });
 
 test('searchEndpoints caps at 25 and finds the assistant create path', () => {
-  const results = searchEndpoints(doc, 'assistant');
+  const { total, results } = searchEndpoints(doc, 'assistant');
   assert.ok(results.length > 0 && results.length <= 25);
+  assert.ok(total >= results.length);
   assert.ok(results.some((entry) => entry.path === '/api/assistant/create'));
+});
+
+test('searchEndpoints reports the full match count when it truncates', () => {
+  // 'a' matches nearly every operation, so the 25-result cap must bite.
+  const { total, results } = searchEndpoints(doc, 'a');
+  assert.strictEqual(results.length, 25);
+  assert.ok(total > 25);
 });
 
 test('listEndpoints filters by tag', () => {
@@ -119,7 +139,7 @@ test('listEndpoints filters by tag', () => {
 
 // --- End to end over HTTP ----------------------------------------------------
 
-test('POST /mcp initialize reports the server name', async (t) => {
+test('POST /mcp initialize reports the server name and says it is docs-only', async (t) => {
   const { server, base } = await startApp();
   t.after(() => server.close());
 
@@ -131,16 +151,50 @@ test('POST /mcp initialize reports the server name', async (t) => {
   });
 
   assert.strictEqual(status, 200);
-  assert.strictEqual(json.result.serverInfo.name, 'intvyom-swagger');
+  // Renamed from intvyom-swagger: the name now says what it is — documentation, not execution.
+  assert.strictEqual(json.result.serverInfo.name, 'intvyom-api-docs');
+  assert.match(json.result.instructions, /documentation only/i);
+  assert.match(json.result.instructions, /cannot call the API/);
 });
 
-test('tools/list returns exactly the four tools', async (t) => {
+test('tools/list returns exactly the five tools, each marked docs-only', async (t) => {
   const { server, base } = await startApp();
   t.after(() => server.close());
 
   const { json } = await mcpPost(base, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
   const names = json.result.tools.map((tool) => tool.name).sort();
-  assert.deepStrictEqual(names, ['get_endpoint', 'get_schema', 'list_endpoints', 'search_endpoints']);
+  // get_overview was added so the API-wide conventions in info.description are reachable.
+  assert.deepStrictEqual(names, ['get_endpoint', 'get_overview', 'get_schema', 'list_endpoints', 'search_endpoints']);
+  assert.ok(json.result.tools.every((tool) => tool.description.startsWith('Docs only')));
+});
+
+test('tools/call get_overview carries the auth rule and says it cannot execute', async (t) => {
+  const { server, base } = await startApp();
+  t.after(() => server.close());
+
+  const { json } = await mcpPost(base, {
+    jsonrpc: '2.0',
+    id: 9,
+    method: 'tools/call',
+    params: { name: 'get_overview', arguments: {} }
+  });
+  const text = json.result.content[0].text;
+  assert.ok(text.includes('Authorization: Bearer <api_key>'));
+  assert.ok(text.includes('cannot execute requests'));
+  assert.ok(text.includes('Base URL: http://localhost:3000'));
+});
+
+test('tools/call get_endpoint shows no auth for login', async (t) => {
+  const { server, base } = await startApp();
+  t.after(() => server.close());
+
+  const { json } = await mcpPost(base, {
+    jsonrpc: '2.0',
+    id: 10,
+    method: 'tools/call',
+    params: { name: 'get_endpoint', arguments: { path: '/api/auth/login', method: 'post' } }
+  });
+  assert.ok(json.result.content[0].text.includes('Auth: none'));
 });
 
 test('tools/call get_endpoint returns a resolved, sendable contract', async (t) => {
@@ -156,7 +210,11 @@ test('tools/call get_endpoint returns a resolved, sendable contract', async (t) 
 
   const text = json.result.content[0].text;
   assert.ok(text.includes('llm_mode'));
-  assert.ok(text.includes('Example request'));
+  assert.ok(text.includes('Auth: `Authorization: Bearer <api_key>`'));
+  // Authored, validated examples are shown; the synthesized fallback is not used here.
+  assert.ok(text.includes('Example `pipeline_sarvam`'));
+  assert.ok(text.includes('Example `realtime_gemini`'));
+  assert.ok(!text.split('**Responses**')[0].includes('Example (synthesized'));
   assert.ok(!text.includes('"$ref"'));
 });
 
@@ -179,6 +237,12 @@ test('tools/call answers bad input with readable text, not an exception', async 
 
   const unknownTag = await call(6, 'list_endpoints', { tag: 'nope' });
   assert.ok(unknownTag.json.result.content[0].text.includes('Valid tags:'));
+
+  // A truncated search says how many matched in total, not the page size twice.
+  const truncated = await call(8, 'search_endpoints', { query: 'a' });
+  const [, total, shown] = truncated.json.result.content[0].text.match(/(\d+) match\(es\), showing (\d+)/);
+  assert.strictEqual(Number(shown), 25);
+  assert.ok(Number(total) > 25);
 
   const noMatch = await call(7, 'search_endpoints', { query: 'zzzzzz' });
   assert.ok(noMatch.json.result.content[0].text.includes('No matches'));

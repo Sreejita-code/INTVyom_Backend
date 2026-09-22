@@ -56,6 +56,7 @@ Every variable the runtime reads — all of them in `src/core/config.js`, mirror
 | `PORT` | `3000` | HTTP listen port |
 | `MONGO_URI` | none (required) | MongoDB connection string |
 | `EXTERNAL_API_BASE` | `https://api-livekit-vyom.indusnettechnologies.com` | LiveKit Agents host; override for staging or a local mock |
+| `DNS_SERVERS` | unset (system resolver) | Comma-separated resolvers applied before the MongoDB connect, e.g. `8.8.8.8,1.1.1.1`. Only for machines whose resolver cannot look up the `mongodb+srv` record (seen on WSL). Leave unset in deploys: it replaces DNS for the whole process, so private/VPC hostnames stop resolving |
 
 Notes:
 - Provider keys (TTS: `sarvam`/`cartesia`/`elevenlabs`/`mistral`, STT: `sarvam`/`cartesia`/`deepgram`/`elevenlabs`/`openai`, LLM: `openai`/`gemini`) are stored through integration APIs, not read from process env. Several vendors share one row across slots — see [STT API key resolution](#stt-api-key-resolution).
@@ -114,29 +115,42 @@ All routes are mounted under:
 /api
 ```
 
-## Swagger MCP server
+## API docs MCP server
 
-The backend serves its own API contract over MCP at `/mcp` (Streamable HTTP), so the frontend agent
-can query it instead of hand-copying from `swagger.yaml`. It is stateless and read-only: it
-describes the API and never calls it, touches MongoDB or holds credentials. It is unauthenticated,
-the same as the public `/api-docs`.
+**This is an API documentation MCP, not an API execution MCP.** The backend serves its own API
+contract over MCP at `/mcp` (Streamable HTTP), so the frontend agent can look up endpoints, auth,
+payload schemas and example requests instead of hand-copying from `swagger.yaml`. It never calls
+the API, never touches MongoDB and holds no credentials. To actually perform a request, the agent
+sends HTTP to the endpoint itself with `Authorization: Bearer <api_key>`. The server tells
+clients this at connect time (MCP `instructions`), and every tool description starts with
+"Docs only". It is stateless and unauthenticated, the same as the public `/api-docs`.
 
 Point the frontend repo's `.mcp.json` at it:
 
 ```json
-{ "mcpServers": { "intvyom-swagger": { "type": "http", "url": "http://localhost:3000/mcp" } } }
+{ "mcpServers": { "intvyom-api-docs": { "type": "http", "url": "http://localhost:3000/mcp" } } }
 ```
 
-Four tools:
+Five tools:
 
+- `get_overview` — base URL, the auth rule, tags and the API-wide conventions (`info.description`). Read first.
 - `list_endpoints` — every endpoint, optionally filtered by `tag`
 - `search_endpoints` — find endpoints by path, summary, description, tag or field name
-- `get_endpoint` — the full resolved contract for one endpoint, plus a ready-to-send example body
+- `get_endpoint` — one endpoint's full resolved contract: its `Auth:` line, parameters, body
+  schema and example payloads
 - `get_schema` — one shared schema from `components.schemas`, resolved, with an example
+
+`get_endpoint` shows the **authored** request examples from `swagger.yaml` (for example
+`pipeline_sarvam`, `realtime_gemini` and `cascade_deepgram` on assistant create). Tests run
+those examples through local validation. Only when an operation has none does it fall back to an
+example synthesized from field-level `example` values, and it labels that fallback "not
+validated".
 
 **Trap:** the server reads `swagger.yaml` once at process start, so a swagger edit needs a backend
 restart before the frontend agent sees it. It also serves that content verbatim — if the YAML is
-stale, the agent is confidently stale too.
+stale, the agent is confidently stale too. `tests/api/swagger.test.js` fails when a mounted
+route is missing from `swagger.yaml` (or the YAML documents one that does not exist), so keep the
+two in the same change.
 
 ## Authentication
 
@@ -155,6 +169,9 @@ authenticate at all and now gets `401` instead of the old `400`.
 ### Auth (`/api/auth`)
 
 - `POST /signup` - Register user and attempt external key creation. Returns the `api_key`.
+  `user_name` and `user_email` are both unique; either one already in use is a `400`, checked
+  before any upstream key is issued. `user_name` is the login name, so it is matched exactly
+  (case-sensitive).
 - `POST /login` - Login with `user_name` and `password`. Returns the `api_key`.
 - `GET /get_api` - **Removed.** It returned the tenant's upstream key to anyone who knew a
   username; use `POST /login` instead.
@@ -555,6 +572,8 @@ INTVyom_Backend/
 ├── .env.example
 ├── AGENTS.md
 ├── scripts/                  # one-off migrations and self-checks
+│   ├── audit-assistant-models.js     # read-only: lists stored assistants on retired model ids
+│   └── audit-duplicate-usernames.js  # read-only: lists users sharing a user_name (blocks the unique index)
 ├── tests/                    # node --test suite, mirrors src/
 └── src/
     ├── index.js              # runner: config → connectDB → listen
@@ -570,7 +589,7 @@ INTVyom_Backend/
     │   ├── assistant.builder.js  # TTS/STT/LLM config construction + key resolution
     │   ├── assistant.resync.js   # key-rotation re-sync job
     │   └── exporter.js       # platform-wise billable minutes xlsx workbook
-    ├── auth/                 # domain: user lifecycle (register/login/key) + userAccess guard
+    ├── auth/                 # domain: signup/login (issues the upstream key) + userAccess guard
     ├── integration/          # domain: provider map (providers.js) + key storage/re-sync
     ├── analytics/            # domain: analytics proxy
     ├── call/                 # domain: outbound call trigger
@@ -581,6 +600,10 @@ INTVyom_Backend/
     ├── inbound/              # domain: inbound mapping CRUD
     ├── inbound-context-strategy/  # domain: context strategy CRUD
     ├── passthrough/          # domain: web-to-SIP passthrough calls
+    ├── meeting/              # domain: Google Meet integration
+    ├── mcp/                  # API docs MCP (docs only, never calls the API), mounted at /mcp
+    │   ├── swagger-index.js  # pure: $ref resolution, examples, endpoint search
+    │   └── swagger-mcp.js    # Streamable HTTP router + the five docs-only tools
     ├── services/
     │   └── livekit/          # the ONLY external HTTP client (callExternal) — axios lives here
     │       └── livekitService.js
@@ -594,6 +617,7 @@ INTVyom_Backend/
         ├── middleware/
         │   ├── asyncHandler.js
         │   ├── errorHandler.js   # one response shape for every error path
+        │   ├── requireAuth.js    # Authorization: Bearer <api_key> → req.user, on every /api route except /api/auth
         │   └── notFound.js
         └── logging/logger.js
 ```
@@ -647,6 +671,10 @@ either identifier.
 - `npm test` - Run the `node --test` suite under `tests/`.
 - `node scripts/check-assistant-payload.js` - Self-check for assistant payload rules.
 - `node src/integration/providers.js` - Self-check for the provider key map.
+- `node scripts/audit-duplicate-usernames.js` - Read-only. Lists users sharing a `user_name`.
+  **Run it before deploying the unique `user_name` index:** Mongoose builds that index at
+  startup and the build fails while duplicates exist, leaving the name unprotected. Mongoose
+  itself swallows that failure; `user.model.js` logs it as `users index build failed`. Rename all but one user per group, then restart. Exit code 1 means duplicates.
 
 ### Applied migrations
 

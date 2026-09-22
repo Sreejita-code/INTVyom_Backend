@@ -101,11 +101,20 @@ const applySttPair = async (payload, updateData, existingAssistant, userId, targ
 };
 
 // Fields the local record mirrors after the upstream patch is accepted.
-const buildLocalUpdateFields = (updateData, { targetMode, provider, modeChanged, providerChanged }) => {
+const buildLocalUpdateFields = (updateData, existingAssistant, { targetMode, provider, modeChanged, providerChanged }) => {
   const fields = {};
 
   for (const [payloadKey, localField] of Object.entries(LOCAL_FIELD_BY_PAYLOAD_KEY)) {
     if (updateData[payloadKey] !== undefined) fields[localField] = updateData[payloadKey];
+  }
+
+  // Upstream merges assistant_end_call_webhook key by key, so the mirror must too: patching
+  // timeout_seconds alone keeps the stored attempts. A null object is mirrored as-is.
+  if (updateData.assistant_end_call_webhook) {
+    fields.end_call_webhook = {
+      ...(existingAssistant?.end_call_webhook || {}),
+      ...updateData.assistant_end_call_webhook,
+    };
   }
 
   if (updateData.assistant_interaction_config !== undefined) {
@@ -160,14 +169,6 @@ const updateAssistant = async (userId, assistantId, updateData) => {
       ...updateData.assistant_llm_config
     };
   }
-  // The stored TTS config is not re-validated on an edit that does not resend it. A stored
-  // target_language_code that is now outside the bulbul:v3 roster must not block a rename — the
-  // speech asserts below fire only on values the caller actually sends, so the repair path stays
-  // open (CLAUDE.md §6).
-  if (updateData.assistant_tts_config === undefined) {
-    delete mergedConfig.assistant_tts_config;
-  }
-
   const validation = validateAssistantConfiguration(mergedConfig);
   if (!validation.isValid) {
     const error = new Error(validation.message);
@@ -319,7 +320,7 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     fallback: 'Failed to update assistant externally',
   });
 
-  const localUpdateFields = buildLocalUpdateFields(updateData, {
+  const localUpdateFields = buildLocalUpdateFields(updateData, existingAssistant, {
     targetMode,
     provider,
     modeChanged: shouldIncludeModeInExternal,

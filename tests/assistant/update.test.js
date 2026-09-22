@@ -283,3 +283,24 @@ test('false and null are mirrored locally; undefined is not', async () => {
 
   assert.deepStrictEqual(sent.localUpdate, { end_call_enabled: false, end_call_url: null });
 });
+
+test('a partial end_call_webhook PATCH is merged into the stored object, as upstream does', async () => {
+  storedAssistant.end_call_webhook = { timeout_seconds: 30, attempts: 3 };
+
+  await updateAssistant('u1', 'ext-1', { assistant_end_call_webhook: { timeout_seconds: 60 } });
+
+  // Upstream receives only what was sent; the local mirror keeps the untouched key.
+  assert.deepStrictEqual(sent.patch.data, { assistant_end_call_webhook: { timeout_seconds: 60 } });
+  assert.deepStrictEqual(sent.localUpdate.end_call_webhook, { timeout_seconds: 60, attempts: 3 });
+});
+
+test('every documented update example in swagger.yaml passes local validation', async () => {
+  // Copy-ready payloads from the /mcp docs server, applied to the stored pipeline/sarvam row.
+  const YAML = require('yamljs');
+  const doc = YAML.load(require('node:path').join(__dirname, '..', '..', 'swagger.yaml'));
+  const examples = doc.paths['/api/assistant/update/{id}'].patch.requestBody.content['application/json'].examples;
+
+  for (const [name, { value }] of Object.entries(examples)) {
+    await assert.doesNotReject(() => updateAssistant('u1', 'ext-1', value), name);
+  }
+});

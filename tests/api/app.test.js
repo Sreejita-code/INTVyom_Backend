@@ -16,6 +16,7 @@ const USERS = [
 ];
 
 const calls = { create: [], details: [] };
+const ASSISTANT_OWNERS = { 'ext-a': 'user-a', 'ext-b': 'user-b' };
 
 stubModule('../../src/core/db/schemas/user.model', {
   findOne: async (filter) => USERS.find((u) => u.api_key === filter.api_key) || null,
@@ -27,9 +28,16 @@ stubModule('../../src/assistant/assistant.service', {
     calls.create.push(data);
     return { _id: 'asst-1', user_id: data.user_id, name: data.assistant_name };
   },
-  getAssistantDetails: async (userId) => {
+  // Ownership is enforced upstream: each user's key only sees that user's assistants, and a
+  // foreign id comes back as 404. The stub mirrors that so the route's identity choice matters.
+  getAssistantDetails: async (userId, assistantId) => {
     calls.details.push(userId);
-    return { success: true, data: { assistant_id: 'ext-1' } };
+    if (ASSISTANT_OWNERS[assistantId] !== userId) {
+      const error = new Error('Assistant not found');
+      error.status = 404;
+      throw error;
+    }
+    return { success: true, data: { assistant_id: assistantId } };
   },
   listAssistants: async () => ({ success: true, data: [] }),
   updateAssistant: async () => ({ success: true }),
@@ -174,13 +182,20 @@ test('cross-tenant: a body user_id cannot override the bearer identity', async (
       assistant_prompt: 'p',
     }),
   });
-  assert.notStrictEqual(created.status, 200);
+  assert.strictEqual(created.status, 201);
   assert.strictEqual(calls.create[0].user_id, 'user-a');
-  assert.notStrictEqual(calls.create[0].user_id, 'user-b');
 
-  // Same for a read: user A's key does not read as user B.
-  await request(base, '/api/assistant/details/ext-1?user_id=user-b', { headers: auth('key-a') });
+  // A's key reads A's assistant, even when the query claims to be B.
+  const own = await request(base, '/api/assistant/details/ext-a?user_id=user-b', { headers: auth('key-a') });
+  assert.strictEqual(own.status, 200);
   assert.strictEqual(calls.details[0], 'user-a');
+
+  // A's key on B's assistant must not answer 200, with or without a spoofed user_id.
+  for (const path of ['/api/assistant/details/ext-b', '/api/assistant/details/ext-b?user_id=user-b']) {
+    const foreign = await request(base, path, { headers: auth('key-a') });
+    assert.strictEqual(foreign.status, 404, path);
+  }
+  assert.deepStrictEqual(calls.details, ['user-a', 'user-a', 'user-a']);
 });
 
 test('wiring: unknown routes hit the 404 fallback with the same envelope', async (t) => {

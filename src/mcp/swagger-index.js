@@ -58,6 +58,8 @@ const resolveRefs = (node, doc, seen = new Set()) => {
 /**
  * One sendable example value for a schema. Run it on an ALREADY-RESOLVED schema so it never has
  * to chase a `$ref`. `nullable` is ignored on purpose: the point is a value you can send.
+ * `oneOf`/`anyOf` take the first branch (one provider's config, never a blend of all of them);
+ * `allOf` merges its branches' examples.
  * @param {object} schema
  */
 const exampleFromSchema = (schema) => {
@@ -66,6 +68,13 @@ const exampleFromSchema = (schema) => {
   if (schema.example !== undefined) return schema.example;
   if (schema.default !== undefined) return schema.default;
   if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
+
+  const branches = schema.oneOf || schema.anyOf;
+  if (Array.isArray(branches) && branches.length > 0) return exampleFromSchema(branches[0]);
+  if (Array.isArray(schema.allOf)) {
+    return Object.assign({}, ...schema.allOf.map((part) => exampleFromSchema(part) || {}));
+  }
+  if (!schema.type && schema.properties) return exampleFromSchema({ ...schema, type: 'object' });
 
   switch (schema.type) {
     case 'object': {
@@ -174,7 +183,8 @@ const jsonSchemaFor = (operation) => {
 
 /**
  * Case-insensitive substring search over path, summary, description, tags and field names, ranked
- * by how many of those categories matched. Returns the top 25.
+ * by how many of those categories matched. Returns the top 25 plus the total match count, so the
+ * caller can say how many it left out.
  */
 const searchEndpoints = (doc, query) => {
   const needle = String(query ?? '').toLowerCase();
@@ -206,10 +216,12 @@ const searchEndpoints = (doc, query) => {
   }
 
   results.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-  return results.slice(0, 25);
+  return { total: results.length, results: results.slice(0, 25) };
 };
 
 module.exports = {
+  HTTP_METHODS,
+  normalizePath,
   resolveRefs,
   exampleFromSchema,
   listEndpoints,

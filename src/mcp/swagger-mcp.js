@@ -1,9 +1,11 @@
 /**
- * Serves this backend's own swagger.yaml over MCP (Model Context Protocol) on the Express app.
+ * API documentation MCP — NOT an API execution MCP. Serves this backend's own swagger.yaml over
+ * MCP (Model Context Protocol) so agents can read endpoint contracts and payloads.
  * Stateless Streamable HTTP: every POST builds a fresh server + transport, no sessions.
  *
  * Read-only by construction: it describes the API and never touches MongoDB, the upstream LiveKit
- * API or any credential. Do not add a tool that performs live requests.
+ * API or any credential. Do not add a tool that performs live requests — agents call the REST API
+ * themselves, with their own bearer key.
  */
 const express = require('express');
 const { z } = require('zod');
@@ -11,6 +13,8 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const asyncHandler = require('../core/middleware/asyncHandler');
 const {
+  HTTP_METHODS,
+  normalizePath,
   resolveRefs,
   exampleFromSchema,
   listEndpoints,
@@ -20,19 +24,53 @@ const {
 
 const pkg = require('../../package.json');
 
-const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
+const DOCS_ONLY = 'Docs only — does not call the API.';
+
+// Shown by MCP clients at connect time, before any tool call.
+const INSTRUCTIONS = [
+  'API documentation only. This server describes the INTVyom REST API from its swagger.yaml.',
+  'It cannot call the API, holds no credentials and never changes data.',
+  'To perform a request, send HTTP to the backend yourself with `Authorization: Bearer <api_key>`',
+  '(every /api route except signup and login needs it).',
+  'Start with get_overview for conventions, then search_endpoints / get_endpoint for contracts.',
+].join(' ');
 
 const textResult = (text) => ({ content: [{ type: 'text', text }] });
 
+// `security: []` on an operation opts out of the document-level requirement.
+const authLine = (operation, doc) => {
+  const requirements = operation.security ?? doc.security ?? [];
+  return requirements.length === 0
+    ? 'Auth: none'
+    : 'Auth: `Authorization: Bearer <api_key>` (the key from POST /api/auth/signup or /api/auth/login)';
+};
+
+// Prefer application/json; otherwise the first declared type (e.g. multipart/form-data).
+const pickContent = (content) => {
+  if (!content) return null;
+  const type = content['application/json'] ? 'application/json' : Object.keys(content)[0];
+  return type ? { type, media: content[type] } : null;
+};
+
+// Authored examples first: they are curated to pass validation. The synthesized one is a fallback.
+const renderExamples = (media, resolvedSchema) => {
+  if (media.examples) {
+    return Object.entries(media.examples).flatMap(([name, example]) => [
+      `Example \`${name}\`${example.summary ? ` — ${example.summary}` : ''}:`,
+      '```json', JSON.stringify(example.value, null, 2), '```',
+    ]);
+  }
+  if (media.example !== undefined) {
+    return ['Example:', '```json', JSON.stringify(media.example, null, 2), '```'];
+  }
+  return [
+    'Example (synthesized from field examples — not validated):',
+    '```json', JSON.stringify(exampleFromSchema(resolvedSchema), null, 2), '```',
+  ];
+};
+
 const endpointLine = ({ method, path, tags, summary }) =>
   `${method} ${path} — [${(tags || []).join(', ')}] ${summary || ''}`.trimEnd();
-
-const normalizePath = (path) => {
-  let value = String(path ?? '').trim();
-  if (!value.startsWith('/')) value = `/${value}`;
-  if (value.length > 1 && value.endsWith('/')) value = value.slice(0, -1);
-  return value;
-};
 
 const nearestPaths = (doc, path, limit) => {
   const target = normalizePath(path).split('/').filter(Boolean);
@@ -80,38 +118,32 @@ const renderEndpoint = ({ operation, path, method }, doc) => {
 
   if (operation.tags?.length) sections.push(`Tags: ${operation.tags.join(', ')}`);
   if (operation.summary) sections.push(`Summary: ${operation.summary}`);
+  sections.push(authLine(operation, doc));
   if (operation.description) sections.push('', operation.description);
 
   sections.push('', '**Parameters**', renderParameters(operation, doc));
 
-  const body = operation.requestBody?.content?.['application/json'];
+  const body = pickContent(resolveRefs(operation.requestBody, doc)?.content);
   sections.push('', '**Request body**');
   if (!body) {
     sections.push('None');
   } else {
-    const resolved = resolveRefs(body.schema, doc);
-    sections.push('Content-Type: application/json', '```json', JSON.stringify(resolved, null, 2), '```');
-  }
-
-  sections.push('', '**Example request**');
-  if (!body) {
-    sections.push('None');
-  } else {
-    const resolved = resolveRefs(body.schema, doc);
-    sections.push('```json', JSON.stringify(exampleFromSchema(resolved), null, 2), '```');
+    const resolved = resolveRefs(body.media.schema, doc);
+    sections.push(`Content-Type: ${body.type}`, '```json', JSON.stringify(resolved, null, 2), '```');
+    sections.push('', ...renderExamples(body.media, resolved));
   }
 
   sections.push('', '**Responses**');
-  const responses = Object.entries(operation.responses || {});
+  const responses = Object.entries(resolveRefs(operation.responses || {}, doc));
   if (responses.length === 0) sections.push('None');
   for (const [code, response] of responses) {
     sections.push('', `#### ${code}`);
     if (response.description) sections.push(response.description);
-    const schema = response.content?.['application/json']?.schema;
-    if (schema) {
-      const resolved = resolveRefs(schema, doc);
+    const content = pickContent(response.content);
+    if (content?.media.schema) {
+      const resolved = resolveRefs(content.media.schema, doc);
       sections.push('```json', JSON.stringify(resolved, null, 2), '```');
-      sections.push('Example:', '```json', JSON.stringify(exampleFromSchema(resolved), null, 2), '```');
+      sections.push(...renderExamples(content.media, resolved));
     }
   }
 
@@ -119,12 +151,42 @@ const renderEndpoint = ({ operation, path, method }, doc) => {
 };
 
 const buildServer = (doc) => {
-  const server = new McpServer({ name: 'intvyom-swagger', version: pkg.version });
+  const server = new McpServer(
+    { name: 'intvyom-api-docs', version: pkg.version },
+    { instructions: INSTRUCTIONS }
+  );
+
+  server.registerTool(
+    'get_overview',
+    {
+      description: `${DOCS_ONLY} API-wide conventions: base URL, auth, tags, runtime modes and traps. Read this first.`,
+      inputSchema: {}
+    },
+    async () => {
+      try {
+        const tags = (doc.tags || []).map((t) => `- ${t.name}: ${t.description || ''}`.trimEnd());
+        return textResult([
+          `# ${doc.info?.title || 'API'} ${doc.info?.version || ''}`.trimEnd(),
+          '',
+          'This MCP server is documentation only: it cannot execute requests. Call the API over HTTP yourself.',
+          `Base URL: ${doc.servers?.[0]?.url || '(not set)'}`,
+          authLine({}, doc),
+          '',
+          '## Tags',
+          ...tags,
+          '',
+          doc.info?.description || ''
+        ].join('\n'));
+      } catch (error) {
+        return textResult(`Error reading overview: ${error.message}`);
+      }
+    }
+  );
 
   server.registerTool(
     'list_endpoints',
     {
-      description: 'List every endpoint in the INTVyom backend API, optionally filtered by tag.',
+      description: `${DOCS_ONLY} List every endpoint in the INTVyom backend API, optionally filtered by tag.`,
       inputSchema: { tag: z.string().optional() }
     },
     async ({ tag }) => {
@@ -147,17 +209,17 @@ const buildServer = (doc) => {
   server.registerTool(
     'search_endpoints',
     {
-      description: 'Find endpoints by path, summary, description, tag or field name.',
+      description: `${DOCS_ONLY} Find endpoints by path, summary, description, tag or field name.`,
       inputSchema: { query: z.string() }
     },
     async ({ query }) => {
       try {
-        const results = searchEndpoints(doc, query);
+        const { total, results } = searchEndpoints(doc, query);
         if (results.length === 0) {
           return textResult(`No matches for '${query}'. Try list_endpoints to see everything.`);
         }
         return textResult(
-          `${results.map(endpointLine).join('\n')}\n\n${results.length} match(es), showing ${results.length}`
+          `${results.map(endpointLine).join('\n')}\n\n${total} match(es), showing ${results.length}`
         );
       } catch (error) {
         return textResult(`Error searching endpoints: ${error.message}`);
@@ -169,7 +231,7 @@ const buildServer = (doc) => {
     'get_endpoint',
     {
       description:
-        'Full request and response contract for one endpoint, with `$ref`s resolved and a ready-to-send example request body.',
+        `${DOCS_ONLY} Full request and response contract for one endpoint: auth, parameters, body schema with \`$ref\`s resolved, and example payloads.`,
       inputSchema: { path: z.string(), method: z.string().default('get') }
     },
     async ({ path, method }) => {
@@ -194,7 +256,7 @@ const buildServer = (doc) => {
   server.registerTool(
     'get_schema',
     {
-      description: 'One shared schema from `components.schemas`, resolved, with an example object.',
+      description: `${DOCS_ONLY} One shared schema from \`components.schemas\`, resolved, with an example object.`,
       inputSchema: { name: z.string() }
     },
     async ({ name }) => {

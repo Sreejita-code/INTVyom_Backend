@@ -1,5 +1,11 @@
 const User = require('../db/schemas/user.model');
 
+const unauthorized = (message) => {
+  const error = new Error(message);
+  error.status = 401;
+  return error;
+};
+
 /**
  * Bearer-key authentication. Identity is the upstream LiveKit key the user was issued at
  * signup, sent the way the upstream API takes it: `Authorization: Bearer <api_key>`.
@@ -10,23 +16,18 @@ const User = require('../db/schemas/user.model');
  */
 const requireAuth = async (req, res, next) => {
   try {
-    const header = req.get('authorization') || '';
-    const [scheme, token] = header.split(' ');
+    // Split on any whitespace run: `Bearer  key` is a valid header, `Bearer key junk` is not.
+    const parts = (req.get('authorization') || '').trim().split(/\s+/);
+    const [scheme, token] = parts;
 
     // One message for "no header" and "bad scheme": do not tell a prober which half failed.
-    if (!token || scheme.toLowerCase() !== 'bearer') {
-      const error = new Error('Authorization header with a Bearer API key is required');
-      error.status = 401;
-      throw error;
+    if (parts.length !== 2 || scheme.toLowerCase() !== 'bearer') {
+      throw unauthorized('Authorization header with a Bearer API key is required');
     }
 
     const user = await User.findOne({ api_key: token });
-    if (!user) {
-      // Same status and shape as the missing-header case, and the token is never echoed.
-      const error = new Error('Invalid API key');
-      error.status = 401;
-      throw error;
-    }
+    // Same status and shape as the missing-header case, and the token is never echoed.
+    if (!user) throw unauthorized('Invalid API key');
 
     req.user = user;
     next();

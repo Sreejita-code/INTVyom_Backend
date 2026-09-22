@@ -17,3 +17,20 @@ test('Settings reads PORT, MONGO_URI and defaults EXTERNAL_API_BASE', () => {
 
   delete process.env.PORT;
 });
+
+test('Settings leaves DNS to the system unless DNS_SERVERS is set', () => {
+  const load = () => {
+    delete require.cache[require.resolve('../../src/core/config')];
+    return require('../../src/core/config');
+  };
+  const saved = process.env.DNS_SERVERS;
+
+  delete process.env.DNS_SERVERS;
+  assert.deepStrictEqual(load().dnsServers, []);
+
+  process.env.DNS_SERVERS = ' 8.8.8.8, 1.1.1.1 ,';
+  assert.deepStrictEqual(load().dnsServers, ['8.8.8.8', '1.1.1.1']);
+
+  if (saved === undefined) delete process.env.DNS_SERVERS;
+  else process.env.DNS_SERVERS = saved;
+});
