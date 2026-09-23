@@ -4,7 +4,8 @@ const logger = getLogger('http');
 
 /**
  * Central error handler. Every error path returns the same shape:
- * `{ error: message }` with the mapped status — or the error's own
+ * `{ error: message }` with the mapped status — plus `suggestions` when a
+ * validation error attached them — or the error's own
  * `payload` verbatim when one is attached (analytics forwards the
  * upstream body this way). Handlers must not build error bodies
  * themselves — throw/next(err) and land here.
@@ -18,7 +19,10 @@ const errorHandler = (err, req, res, next) => {
   if (status >= 500) {
     logger.error(`${req.method} ${req.originalUrl} -> ${err.stack || err.message}`);
   }
-  res.status(status).json(err.payload || { error: err.message || 'Internal Server Error' });
+  res.status(status).json(err.payload || {
+    error: err.message || 'Internal Server Error',
+    ...(err.suggestions && { suggestions: err.suggestions }),
+  });
 };
 
 module.exports = errorHandler;

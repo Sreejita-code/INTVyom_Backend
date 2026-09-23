@@ -218,6 +218,22 @@ test('tools/call get_endpoint returns a resolved, sendable contract', async (t) 
   assert.ok(!text.includes('"$ref"'));
 });
 
+test('tools/call get_endpoint resolves $ref path parameters instead of printing undefined', async (t) => {
+  const { server, base } = await startApp();
+  t.after(() => server.close());
+
+  const { json } = await mcpPost(base, {
+    jsonrpc: '2.0',
+    id: 11,
+    method: 'tools/call',
+    params: { name: 'get_endpoint', arguments: { path: '/api/assistant/details/{id}', method: 'get' } }
+  });
+
+  const text = json.result.content[0].text;
+  assert.ok(text.includes('- id (path, required) string'));
+  assert.ok(!text.includes('undefined (undefined)'));
+});
+
 test('tools/call answers bad input with readable text, not an exception', async (t) => {
   const { server, base } = await startApp();
   t.after(() => server.close());

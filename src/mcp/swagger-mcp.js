@@ -100,6 +100,9 @@ const renderParameters = (operation, doc) => {
   const params = operation.parameters || [];
   if (params.length === 0) return 'None';
   return params
+    // Shared params are `$ref`s to components.parameters; resolve the param itself, not only
+    // its schema, or name/in render as "undefined (undefined)".
+    .map((ref) => resolveRefs(ref, doc))
     .map((param) => {
       const schema = param.schema ? resolveRefs(param.schema, doc) : {};
       const type = schema.type || (Array.isArray(schema.enum) ? `enum(${schema.enum.join('|')})` : '');

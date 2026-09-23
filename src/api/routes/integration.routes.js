@@ -23,7 +23,6 @@ router.post('/store', asyncHandler(async (req, res) => {
     data: {
       service_type: integration.service_type,
       service_name: integration.service_name,
-      // Optional: Mask the API key in the response for security
       api_key_preview: `***${integration.api_key.slice(-4)}`
     },
     // Existing assistants using this provider are re-pushed the new key.
@@ -31,7 +30,8 @@ router.post('/store', asyncHandler(async (req, res) => {
   });
 }));
 
-// Retrieve provider API key.
+// Retrieve a stored provider integration. The key itself never leaves the server: only the
+// same masked preview /store returns.
 router.get('/get', asyncHandler(async (req, res) => {
   const { service_name } = req.query;
 
@@ -46,7 +46,7 @@ router.get('/get', asyncHandler(async (req, res) => {
     data: {
       service_type: result.service_type,
       service_name: result.service_name,
-      api_key: result.api_key // Return the full key here so your backend can use it
+      api_key_preview: `***${result.api_key.slice(-4)}`
     }
   });
 }));

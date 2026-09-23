@@ -19,7 +19,7 @@ info:
     - **Errors** are always `{ "error": "<message>" }` with the HTTP status (analytics endpoints
       pass the upstream error body through instead). Success bodies vary per endpoint.
     - **Provider API keys** are never taken from a payload. Store them once with
-      `POST /api/integration/` (`service_name`: `openai`, `gemini`, `sarvam`, `cartesia`,
+      `POST /api/integration/store` (`service_name`: `openai`, `gemini`, `sarvam`, `cartesia`,
       `deepgram`, `elevenlabs`, `mistral`); any `api_key` inside an LLM/TTS/STT config is
       replaced. One vendor key backs every slot it serves (`sarvam`/`cartesia`/`elevenlabs`:
       STT and TTS; `openai`: LLM and cascade STT), and rotating it re-syncs all of them.
@@ -345,7 +345,11 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '201':
-          description: Assistant created successfully
+          description: >
+            Assistant created. **`assistant` is the local mirror record, not the upstream
+            shape** — it uses bare keys (`name`, `llm_mode`, `prompt`, `external_assistant_id`),
+            while list and details return upstream's `assistant_*` keys. Use
+            `assistant.external_assistant_id` as the id for every later call.
           content:
             application/json:
               schema:
@@ -357,9 +361,18 @@ paths:
                   assistant:
                     $ref: '#/components/schemas/Assistant'
         '400':
-          description: Validation error
+          description: Validation error — `error` plus, when the validator can propose a fix, `suggestions`
           content:
             application/json:
+              examples:
+                unsupported_provider:
+                  summary: 'Gemini LLM on a cascade assistant'
+                  value:
+                    error: 'LLM provider ''gemini'' is not supported in cascade mode. Supported providers: openai Reason: Gemini is not supported in cascade mode - there is no realtime model to transcribe itself'
+                    suggestions:
+                      llm: 'Try: openai'
+                      llm_notes: 'Gemini is not supported in cascade mode - there is no realtime model to transcribe itself'
+                      stt_notes: 'Native STT is rejected - there is no realtime model to transcribe itself'
               schema:
                 $ref: '#/components/schemas/Error'
         '500':
@@ -419,15 +432,64 @@ paths:
           description: Assistant list retrieved
           content:
             application/json:
+              examples:
+                page_one:
+                  summary: 'First page — `data` is an object, not an array'
+                  value:
+                    success: true
+                    message: 'Assistants retrieved successfully'
+                    data:
+                      assistants:
+                        -
+                          assistant_id: 550e8400-e29b-41d4-a716-446655440000
+                          assistant_name: 'Support Bot'
+                          assistant_mode: pipeline
+                          assistant_tts_model: cartesia
+                          assistant_tts_config:
+                            voice_id: a16...275
+                            api_key: 'Using System provided API Key'
+                          assistant_stt_model: sarvam
+                          assistant_stt_config:
+                            type: sarvam
+                            model: 'saaras:v3'
+                            language: unknown
+                            api_key: 'Using System provided API Key'
+                          assistant_interaction_config:
+                            speaks_first: true
+                            filler_words: false
+                            silence_reprompts: false
+                            silence_reprompt_interval: 10
+                            silence_max_reprompts: 2
+                            background_sound_enabled: true
+                            thinking_sound_enabled: true
+                            allow_interruptions: false
+                            input_guard_window_sec: 3
+                            preferred_languages: null
+                            max_call_duration_minutes: null
+                          assistant_created_by_email: admin@example.com
+                      pagination:
+                        total: 1
+                        page: 1
+                        limit: 100
+                        total_pages: 1
               schema:
                 type: object
                 properties:
                   success:
                     type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Assistants retrieved successfully"
                   data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Assistant'
+                    type: object
+                    properties:
+                      assistants:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AssistantSummary'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
         '400':
           description: Invalid request parameters
           content:
@@ -441,7 +503,10 @@ paths:
     get:
       tags: [Assistant]
       summary: Get assistant details
-      description: Retrieves details for a specific assistant by local or external ID.
+      description: >
+        Upstream details passthrough (`assistant_*` keys, API keys masked), plus one proxy-added
+        field: `assistant_end_call_webhook`, read from the local mirror because upstream does
+        not return it. Pass the external assistant id (`external_assistant_id` from create).
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
@@ -451,8 +516,65 @@ paths:
           description: Assistant details retrieved
           content:
             application/json:
+              examples:
+                realtime_gemini:
+                  summary: 'Upstream details plus the proxy-added `assistant_end_call_webhook`'
+                  value:
+                    success: true
+                    message: 'Assistant details retrieved successfully'
+                    data:
+                      assistant_id: 550e8400-e29b-41d4-a716-446655440000
+                      assistant_name: 'Gemini Assistant'
+                      assistant_description: 'Realtime voice assistant'
+                      assistant_prompt: 'You are a helpful assistant.'
+                      assistant_mode: realtime
+                      assistant_llm_config:
+                        provider: gemini
+                        model: gemini-3.8-live
+                        voice: Puck
+                        api_key: 'Using System provided API Key'
+                      assistant_tts_model: null
+                      assistant_tts_config: null
+                      assistant_stt_model: sarvam
+                      assistant_stt_config:
+                        type: sarvam
+                        model: 'saaras:v3'
+                        language: unknown
+                        api_key: 'Using System provided API Key'
+                      assistant_start_instruction: null
+                      assistant_interaction_config:
+                        speaks_first: true
+                        filler_words: false
+                        silence_reprompts: false
+                        silence_reprompt_interval: 10
+                        silence_max_reprompts: 2
+                        background_sound_enabled: true
+                        thinking_sound_enabled: true
+                        allow_interruptions: false
+                        input_guard_window_sec: 3
+                        preferred_languages: null
+                        max_call_duration_minutes: null
+                      assistant_end_call_enabled: true
+                      assistant_end_call_trigger_phrase: null
+                      assistant_end_call_agent_message: null
+                      assistant_end_call_url: 'https://your-app.com/webhooks/call-ended'
+                      assistant_end_call_webhook:
+                        timeout_seconds: 45
+                        attempts: 5
+                      tool_ids: []
+                      assistant_created_at: '2026-03-30T10:00:00.000000'
+                      assistant_updated_at: '2026-03-30T10:00:00.000000'
               schema:
-                $ref: '#/components/schemas/Assistant'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Assistant details retrieved successfully"
+                  data:
+                    $ref: '#/components/schemas/AssistantDetails'
         '400':
           description: Missing required parameters
           content:
@@ -583,9 +705,18 @@ paths:
                   local_data:
                     $ref: '#/components/schemas/Assistant'
         '400':
-          description: Validation error
+          description: Validation error — `error` plus, when the validator can propose a fix, `suggestions`
           content:
             application/json:
+              examples:
+                unsupported_provider:
+                  summary: 'Gemini LLM on a cascade assistant'
+                  value:
+                    error: 'LLM provider ''gemini'' is not supported in cascade mode. Supported providers: openai Reason: Gemini is not supported in cascade mode - there is no realtime model to transcribe itself'
+                    suggestions:
+                      llm: 'Try: openai'
+                      llm_notes: 'Gemini is not supported in cascade mode - there is no realtime model to transcribe itself'
+                      stt_notes: 'Native STT is rejected - there is no realtime model to transcribe itself'
               schema:
                 $ref: '#/components/schemas/Error'
         '500':
@@ -661,20 +792,83 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '200':
-          description: Call logs retrieved
+          description: Call logs retrieved (upstream response, passed through unchanged)
           content:
             application/json:
+              examples:
+                one_completed_call:
+                  summary: '`data.logs[]` + `data.pagination`'
+                  value:
+                    success: true
+                    message: 'Call logs retrieved successfully'
+                    data:
+                      logs:
+                        -
+                          room_name: 550e8400-e29b-41d4-a716-446655440000_abc123
+                          assistant_id: 550e8400-e29b-41d4-a716-446655440000
+                          assistant_name: 'Support Bot'
+                          to_number: '+1234567890'
+                          call_status: completed
+                          call_status_reason: null
+                          sip_status_code: null
+                          sip_status_text: null
+                          answered_at: '2024-01-20T14:30:02.000Z'
+                          started_at: '2024-01-20T14:30:00.000Z'
+                          ended_at: '2024-01-20T14:35:00.000Z'
+                          call_duration_minutes: 5
+                          billable_duration_minutes: 5
+                          recording_path: 'https://bucket.s3.amazonaws.com/recordings/550e8400...abc123.ogg'
+                          transcripts:
+                            -
+                              speaker: agent
+                              text: 'Hello, how can I help you?'
+                              timestamp: '2024-01-20T14:30:05.000Z'
+                          usage:
+                            room_name: 550e8400-e29b-41d4-a716-446655440000_abc123
+                            mode: cascade
+                            llm_model: gpt-4.1
+                            llm_input_tokens: 1500
+                            llm_output_tokens: 300
+                            llm_total_tokens: 1800
+                            tts_characters_count: 4500
+                            stt_provider: deepgram
+                            stt_model: nova-3
+                            stt_audio_duration: 300
+                            estimated_cost_usd: '0.0234'
+                            pricing_complete: true
+                            usage_finalized: true
+                      pagination:
+                        total: 25
+                        page: 1
+                        limit: 5
+                        total_pages: 5
               schema:
                 type: object
                 properties:
                   success:
                     type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Call logs retrieved successfully"
                   data:
-                    type: array
-                    items:
-                      type: object
+                    type: object
+                    description: "**An object, not an array** — the rows are in `data.logs`."
+                    properties:
+                      logs:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CallLog'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
         '400':
           description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assistant not found for this user
           content:
             application/json:
               schema:
@@ -919,9 +1113,29 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '201':
-          description: Outbound trunk created
+          description: >
+            Outbound trunk created. `trunk` is the stored record with the same allow-listed
+            `trunk_config` as list/details — the `username`/`password` you sent are never echoed.
           content:
             application/json:
+              examples:
+                twilio:
+                  summary: 'Credentials sent on create are not echoed'
+                  value:
+                    message: 'Outbound trunk created successfully locally and externally'
+                    trunk:
+                      _id: 665f1a2b3c4d5e6f7a8b9c0d
+                      user_id: 665f1a2b3c4d5e6f7a8b9c0e
+                      external_trunk_id: ST_a1b2c3d4e5f6
+                      trunk_name: 'Twilio Production'
+                      trunk_type: twilio
+                      trunk_config:
+                        address: example.pstn.twilio.com
+                        numbers:
+                          - '+15550100000'
+                      passthrough_mode: false
+                      createdAt: '2026-09-22T10:00:00.000Z'
+                      updatedAt: '2026-09-22T10:00:00.000Z'
               schema:
                 type: object
                 properties:
@@ -951,6 +1165,37 @@ paths:
           description: SIP trunks retrieved
           content:
             application/json:
+              examples:
+                twilio_and_exotel:
+                  summary: 'Each trunk carries only its own safe config keys'
+                  value:
+                    success: true
+                    message: 'SIP trunks retrieved successfully from local database'
+                    data:
+                      -
+                        _id: 665f1a2b3c4d5e6f7a8b9c0d
+                        user_id: 665f1a2b3c4d5e6f7a8b9c0e
+                        external_trunk_id: ST_a1b2c3d4e5f6
+                        trunk_name: 'Twilio Production'
+                        trunk_type: twilio
+                        trunk_config:
+                          address: example.pstn.twilio.com
+                          numbers:
+                            - '+15550100000'
+                        passthrough_mode: false
+                        createdAt: '2026-09-22T10:00:00.000Z'
+                        updatedAt: '2026-09-22T10:00:00.000Z'
+                      -
+                        _id: 665f1a2b3c4d5e6f7a8b9c1d
+                        user_id: 665f1a2b3c4d5e6f7a8b9c0e
+                        external_trunk_id: ST_b2c3d4e5f6a7
+                        trunk_name: 'Exotel India'
+                        trunk_type: exotel
+                        trunk_config:
+                          exotel_number: '+918044319240'
+                        passthrough_mode: false
+                        createdAt: '2026-09-22T11:00:00.000Z'
+                        updatedAt: '2026-09-22T11:00:00.000Z'
               schema:
                 type: object
                 properties:
@@ -981,6 +1226,23 @@ paths:
           description: SIP trunk details retrieved
           content:
             application/json:
+              examples:
+                twilio:
+                  value:
+                    success: true
+                    data:
+                      _id: 665f1a2b3c4d5e6f7a8b9c0d
+                      user_id: 665f1a2b3c4d5e6f7a8b9c0e
+                      external_trunk_id: ST_a1b2c3d4e5f6
+                      trunk_name: 'Twilio Production'
+                      trunk_type: twilio
+                      trunk_config:
+                        address: example.pstn.twilio.com
+                        numbers:
+                          - '+15550100000'
+                      passthrough_mode: false
+                      createdAt: '2026-09-22T10:00:00.000Z'
+                      updatedAt: '2026-09-22T10:00:00.000Z'
               schema:
                 type: object
                 properties:
@@ -1254,8 +1516,10 @@ paths:
   /api/integration/get:
     get:
       tags: [Integration]
-      summary: Get integration API key
-      description: Retrieves the stored API key for a specific service.
+      summary: Get integration (masked key)
+      description: >
+        Confirms a provider key is stored and shows its last four characters. The plaintext
+        key is never returned — same masked `api_key_preview` as `POST /store`.
       parameters:
         - name: service_name
           in: query
@@ -1270,6 +1534,15 @@ paths:
           description: API key retrieved
           content:
             application/json:
+              examples:
+                masked:
+                  summary: 'The plaintext key is never returned'
+                  value:
+                    success: true
+                    data:
+                      service_type: LLM
+                      service_name: openai
+                      api_key_preview: '***1234'
               schema:
                 type: object
                 properties:
@@ -1283,8 +1556,10 @@ paths:
                         type: string
                       service_name:
                         type: string
-                      api_key:
+                      api_key_preview:
                         type: string
+                        example: "***1234"
+                        description: "`***` followed by the key's last four characters."
         '404':
           description: API key not found
           content:
@@ -1313,6 +1588,24 @@ paths:
           description: Re-sync status retrieved
           content:
             application/json:
+              examples:
+                completed_with_failure:
+                  value:
+                    success: true
+                    data:
+                      _id: 6710a1b2c3d4e5f6a7b8c9d0
+                      service_name: openai
+                      status: completed
+                      total: 3
+                      processed: 3
+                      succeeded: 2
+                      failed:
+                        -
+                          assistant_id: 550e8400-e29b-41d4-a716-446655440000
+                          error: 'Failed to update assistant externally'
+                      error: null
+                      createdAt: '2026-09-22T10:00:00.000Z'
+                      updatedAt: '2026-09-22T10:00:04.000Z'
               schema:
                 type: object
                 properties:
@@ -1320,20 +1613,7 @@ paths:
                     type: boolean
                     example: true
                   data:
-                    type: object
-                    properties:
-                      job_id:
-                        type: string
-                      status:
-                        type: string
-                        enum: [running, completed, error, interrupted]
-                        description: >
-                          `running` while assistants are being re-pushed, `completed` on
-                          success, `error` on failure, `interrupted` when the process died
-                          mid-job (synthesized on read, never stored).
-                      created_at:
-                        type: string
-                        format: date-time
+                    $ref: '#/components/schemas/ResyncJob'
         '400':
           description: Missing required parameters
           content:
@@ -1751,16 +2031,35 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '200':
-          description: Token generated (external API response)
+          description: Token generated (upstream response, passed through unchanged)
           content:
             application/json:
+              examples:
+                voice:
+                  value:
+                    success: true
+                    message: 'Token generated successfully'
+                    data:
+                      room_name: 550e8400-e29b-41d4-a716-446655440000_ab12cd34
+                      token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
               schema:
                 type: object
                 properties:
-                  room_token:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
                     type: string
-                  room_name:
-                    type: string
+                    example: "Token generated successfully"
+                  data:
+                    type: object
+                    properties:
+                      room_name:
+                        type: string
+                        description: LiveKit room created for this web call.
+                      token:
+                        type: string
+                        description: Participant access token (JWT) for joining the room.
         '400':
           description: Missing required fields
           content:
@@ -2739,8 +3038,10 @@ paths:
                       is_valid:
                         type: boolean
                       suggestions:
-                        nullable: true
                         description: Present when the validator can propose a fix; otherwise `null`.
+                        nullable: true
+                        allOf:
+                          - $ref: '#/components/schemas/ValidationSuggestions'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -3227,9 +3528,257 @@ components:
           type: string
           description: Error message
           example: "Something went wrong"
+        suggestions:
+          $ref: '#/components/schemas/ValidationSuggestions'
+
+    ValidationSuggestions:
+      type: object
+      description: >
+        **An object keyed by slot, not an array.** Sent on assistant create/update validation
+        failures (`400`, next to `error`) and in `data.suggestions` from
+        `POST /api/assistant/validate`. Only the keys that apply are present. `llm`/`stt`/`tts`
+        list the providers valid for the chosen mode; the `*_notes` keys explain the mode's
+        constraint for that slot.
+      properties:
+        llm:
+          type: string
+          example: "Try: openai"
+        stt:
+          type: string
+        tts:
+          type: string
+        llm_notes:
+          type: string
+          example: "Gemini is not supported in cascade mode - there is no realtime model to transcribe itself"
+        stt_notes:
+          type: string
+        tts_notes:
+          type: string
+
+    CallLog:
+      type: object
+      description: One call record, as upstream returns it.
+      properties:
+        room_name:
+          type: string
+          description: LiveKit room name; the call's unique id.
+        assistant_id:
+          type: string
+        assistant_name:
+          type: string
+          description: Name at the time of the call.
+        to_number:
+          type: string
+        call_status:
+          type: string
+          enum: [initiated, answered, completed, busy, no_answer, rejected, cancelled, unreachable, timeout, failed]
+        call_status_reason:
+          type: string
+          nullable: true
+        sip_status_code:
+          type: integer
+          nullable: true
+        sip_status_text:
+          type: string
+          nullable: true
+        answered_at:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+        ended_at:
+          type: string
+          nullable: true
+        call_duration_minutes:
+          type: number
+          description: Measured duration.
+        billable_duration_minutes:
+          type: integer
+          description: >
+            Charged minutes — rounded up for connected calls, `0` for non-connected outcomes.
+            Do not recompute it from `call_duration_minutes`.
+        recording_path:
+          type: string
+          nullable: true
+        transcripts:
+          type: array
+          items:
+            type: object
+            properties:
+              speaker:
+                type: string
+              text:
+                type: string
+              timestamp:
+                type: string
+        usage:
+          type: object
+          nullable: true
+          description: >
+            Usage and estimated AI-provider cost; `null` when no usage row exists (e.g. the call
+            failed before the agent session started). Mid-call values are a snapshot —
+            `usage_finalized: true` marks the final totals. `estimated_cost_usd` is a decimal
+            **string** and an estimate.
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+        total_pages:
+          type: integer
+
+    AssistantSummary:
+      type: object
+      description: One list item, as upstream returns it (`assistant_*` keys, API keys masked).
+      properties:
+        assistant_id:
+          type: string
+        assistant_name:
+          type: string
+        assistant_mode:
+          type: string
+          enum: [pipeline, realtime, cascade]
+        assistant_tts_model:
+          type: string
+          nullable: true
+        assistant_tts_config:
+          type: object
+          nullable: true
+        assistant_stt_model:
+          type: string
+          nullable: true
+          description: "`null` means the default, `sarvam`."
+        assistant_stt_config:
+          type: object
+          nullable: true
+        assistant_interaction_config:
+          $ref: '#/components/schemas/AssistantInteractionConfig'
+        assistant_created_by_email:
+          type: string
+
+    AssistantDetails:
+      type: object
+      description: >
+        Full upstream configuration for one assistant. API keys inside the config objects are
+        always masked (`sk-t...5678`, `Using System provided API Key`) — **never PATCH a masked
+        key back**; upstream rejects it with 422. Omit the field to keep the stored key.
+      properties:
+        assistant_id:
+          type: string
+        assistant_name:
+          type: string
+        assistant_description:
+          type: string
+        assistant_prompt:
+          type: string
+        assistant_mode:
+          type: string
+          enum: [pipeline, realtime, cascade]
+        assistant_llm_config:
+          type: object
+          nullable: true
+        assistant_tts_model:
+          type: string
+          nullable: true
+        assistant_tts_config:
+          type: object
+          nullable: true
+        assistant_stt_model:
+          type: string
+          nullable: true
+        assistant_stt_config:
+          type: object
+          nullable: true
+        assistant_start_instruction:
+          type: string
+          nullable: true
+        assistant_interaction_config:
+          $ref: '#/components/schemas/AssistantInteractionConfig'
+        assistant_end_call_enabled:
+          type: boolean
+        assistant_end_call_trigger_phrase:
+          type: string
+          nullable: true
+        assistant_end_call_agent_message:
+          type: string
+          nullable: true
+        assistant_end_call_url:
+          type: string
+          nullable: true
+        assistant_end_call_webhook:
+          description: >
+            **Added by this proxy** from the local mirror — upstream details do not return it.
+            Absent when there is no local record. A `null` key means the server default
+            (30 s timeout, 3 attempts).
+          allOf:
+            - $ref: '#/components/schemas/AssistantEndCallWebhook'
+        tool_ids:
+          type: array
+          items:
+            type: string
+        assistant_created_at:
+          type: string
+          example: "2026-03-30T10:00:00.000000"
+          description: >
+            ISO-8601 as upstream sends it — microseconds and **no timezone offset**. Not an
+            RFC 3339 `date-time`; do not parse it as local time.
+        assistant_updated_at:
+          type: string
+          example: "2026-03-30T10:00:00.000000"
+          description: Same format as `assistant_created_at`.
+
+    ResyncJob:
+      type: object
+      description: The current re-sync job for one (user, provider). No history is kept.
+      properties:
+        _id:
+          type: string
+        service_name:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, error, interrupted]
+          description: >
+            `running` while assistants are being re-pushed, `completed` on success, `error` on
+            failure, `interrupted` when a `running` job stopped updating (the process died
+            mid-job). `interrupted` is computed on read and never stored.
+        total:
+          type: integer
+          description: Assistants to re-push.
+        processed:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: array
+          items:
+            type: object
+            properties:
+              assistant_id:
+                type: string
+              error:
+                type: string
+        error:
+          type: string
+          nullable: true
+          description: Job-level failure message; per-assistant failures are in `failed`.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
 
     Assistant:
       type: object
+      description: >
+        The **local mirror** record (bare keys, not upstream's `assistant_*`). Returned by
+        create and template apply. For the live configuration use `GET /api/assistant/details/{id}`.
       properties:
         _id:
           type: string
@@ -3372,6 +3921,7 @@ components:
             `max_duration_exceeded`. Unset/null = platform default of 30 minutes.
         preferred_languages:
           type: array
+          nullable: true
           items:
             type: string
           default: []
@@ -3382,7 +3932,8 @@ components:
             does not pin a language and does not disable auto-detect. To fix a language, set it
             on `assistant_stt_config`. This is the only language input that is a LIST — the
             per-provider TTS/STT language fields (`assistant_tts_config.target_language_code`,
-            `assistant_stt_config.language`) are each a single string.
+            `assistant_stt_config.language`) are each a single string. Upstream list and details
+            return `null` when it is unset.
 
     AssistantLlmConfig:
       type: object
@@ -3498,7 +4049,7 @@ components:
         `elevenlabs` -> ElevenLabsTtsConfig, `mistral` -> MistralTtsConfig. Every block is
         STRICT — an unrecognised key (another provider's key, or a typo like `speaking_rate`) is
         rejected with 422 rather than silently dropped. Any `api_key` sent here is ignored — the
-        key always comes from the Integrations module (`POST /api/integration/`).
+        key always comes from the Integrations module (`POST /api/integration/store`).
 
         The synthesis model is fixed per provider except ElevenLabs: cartesia `sonic-3`, sarvam
         `bulbul:v3`, mistral `voxtral-mini-tts-2603`. Speaking speed is per-provider and NOT
@@ -3980,10 +4531,11 @@ components:
     SipTrunk:
       type: object
       description: >
-        A trunk as returned by the list and details endpoints. `trunk_config` (which carries the
-        Twilio `username` and `password`) is deliberately NOT returned — upstream withholds it
-        from the list for security reasons and documents no details endpoint. It is sent only on
-        create.
+        A trunk as returned by create, list and details. `trunk_config` is an **allow-list** of
+        the non-secret keys only; the Twilio `username`/`password` (and any key not listed
+        below) are never returned. Upstream's own list withholds `trunk_config` entirely — this
+        proxy deliberately returns the display-safe subset so a UI can show numbers. Calls
+        never need `trunk_config`: pass the trunk's `_id` or `external_trunk_id` as `trunk_id`.
       properties:
         _id:
           type: string
@@ -4001,6 +4553,33 @@ components:
           type: string
           enum: [twilio, exotel]
           example: "twilio"
+        trunk_config:
+          type: object
+          description: Only the keys stored for this trunk appear.
+          properties:
+            address:
+              type: string
+              description: Twilio SIP domain.
+              example: "example.pstn.twilio.com"
+            numbers:
+              type: array
+              items:
+                type: string
+              description: Twilio numbers on this trunk (E.164).
+              example: ["+15550100000"]
+            exotel_number:
+              type: string
+              description: Exotel virtual number (caller ID).
+              example: "+918044319240"
+            sip_host:
+              type: string
+              description: Exotel SIP proxy host override.
+            sip_port:
+              type: integer
+              description: Exotel SIP proxy port override.
+            sip_domain:
+              type: string
+              description: Exotel SIP domain/realm override.
         passthrough_mode:
           type: boolean
           example: false

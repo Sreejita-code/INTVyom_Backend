@@ -35,3 +35,14 @@ test('error with payload returns the payload verbatim (analytics passthrough)', 
   assert.strictEqual(out.status, 502);
   assert.deepStrictEqual(out.body, { error: 'Failed to contact external analytics service' });
 });
+
+test('validation suggestions ride along with the error message', () => {
+  // Real shape from getSuggestedAlternatives: an object keyed by slot, not an array.
+  const suggestions = { llm: 'Try: openai', llm_notes: 'Gemini is not supported in cascade mode' };
+  const err = new Error("LLM provider 'gemini' is not supported in cascade mode");
+  err.status = 400;
+  err.suggestions = suggestions;
+  const out = respond(err);
+  assert.strictEqual(out.status, 400);
+  assert.deepStrictEqual(out.body, { error: err.message, suggestions });
+});

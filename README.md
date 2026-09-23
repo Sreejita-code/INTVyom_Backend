@@ -21,6 +21,11 @@ Every failure returns the same shape, built centrally by
 
 - The status comes from `err.status` (validation `400`, upstream `4xx` passed through,
   `404` for unknown routes) and falls back to `500`.
+- Assistant create/update validation failures (`400`) add `suggestions` next to `error` — the
+  same hints `POST /api/assistant/validate` returns in `data.suggestions`. It is an **object
+  keyed by slot, not an array**, and only the keys that apply are present:
+  `{ "llm": "Try: openai", "llm_notes": "Gemini is not supported in cascade mode - ..." }`
+  (keys: `llm`, `stt`, `tts`, `llm_notes`, `stt_notes`, `tts_notes`).
 - Analytics endpoints forward the upstream error body verbatim instead, via `err.payload`.
 - Route handlers never build error bodies — they `throw` and land in the central handler.
 
@@ -178,15 +183,27 @@ authenticate at all and now gets `401` instead of the old `400`.
 
 ### Assistant (`/api/assistant`)
 
-- `POST /create` - Create assistant.
+- `POST /create` - Create assistant. **Returns the local mirror record, not the upstream
+  shape:** `assistant` has bare keys (`name`, `llm_mode`, `prompt`, `external_assistant_id`),
+  while `list` and `details` return upstream's `assistant_*` keys. Use
+  `assistant.external_assistant_id` for every later call.
 - `GET /list` - List assistants. Optional: `page`, `limit` (defaults to 100 here,
   not the external API's 10, because existing clients expect the whole list in one call),
   `assistant_name` (case-insensitive partial match), `start_date`, `end_date`, `sort_by`,
-  `sort_order`.
-- `GET /details/:id` - Assistant details.
+  `sort_order`. Response: `data.assistants[]` (upstream `assistant_*` keys) and
+  `data.pagination` (`total`, `page`, `limit`, `total_pages`) — `data` is an object, not an array.
+- `GET /details/:id` - Assistant details: upstream's `data` (`assistant_*` keys, API keys masked)
+  plus `assistant_end_call_webhook`, which **this proxy adds** from the local mirror because
+  upstream does not return it. Absent when no local record exists. Never PATCH a masked key
+  back — upstream rejects it with `422`; omit the field to keep the stored key.
 - `PATCH /update/:id` - Update assistant.
 - `DELETE /delete/:id` - Delete assistant.
-- `GET /call-logs/:id` - Assistant call logs.
+- `GET /call-logs/:id` - Assistant call logs, upstream response passed through:
+  `data.logs[]` plus `data.pagination` (`total`, `page`, `limit`, `total_pages`) — `data` is an
+  object, not an array. Upstream's page size defaults to 10 (max 100). Each log carries a
+  `usage` object (`null` when none exists; `estimated_cost_usd` is a decimal string). An
+  assistant that is not yours (or does not exist) is `404`, as are `billable-minutes/:id`
+  lookups (was `500`).
 
 Additional fields for create/update:
 - `assistant_greeting_audio`: Object `{ "enabled": bool, "audio_id": string }`. When enabled and `interaction_config.speaks_first=true`, plays the prerecorded clip instead of a model-generated greeting.
@@ -422,10 +439,17 @@ idempotent (key on `data.room_name`, or `data.queue_id` for outbound).
   `external_deactivated: false`; any other upstream failure aborts before the local delete, so the
   two sides cannot drift.
 
-**Breaking change (2026-09-22): `GET /list` and `GET /details/:id` no longer return
-`trunk_config`.** It carries the Twilio `username` and `password`; upstream withholds it from the
-list and documents no details endpoint, so the proxy does the same. The config is still sent on
-create.
+**`trunk_config` is allow-listed on every response (create, list, details).** Only the
+display-safe keys come back — `address`, `numbers` (Twilio) and `exotel_number`, `sip_host`,
+`sip_port`, `sip_domain` (Exotel) — and only those stored for that trunk. The Twilio
+`username`/`password`, and any key not on that list, are never returned, including in the create
+response. Upstream's own list withholds `trunk_config` entirely; the proxy deliberately returns
+the safe subset so a UI can show a trunk's numbers. (From 2026-09-22 until this change the whole
+object was hidden, which also hid the numbers.)
+
+Placing a call never needs `trunk_config`: pass the trunk's `_id` or `external_trunk_id` as
+`trunk_id` to `POST /api/call/outbound` or `/api/passthrough-call/passthrough-outbound`. The proxy
+resolves it and sends only `external_trunk_id` upstream, which holds the credentials itself.
 
 ### Call (`/api/call`)
 
@@ -441,9 +465,14 @@ create.
   `service_type` is optional and derived from `service_name` when omitted. A `service_name`
   the provider map doesn't know returns `400`. Returns immediately; a background re-sync
   (below) starts automatically. Response includes `resync: { job_id, status: "running" }`.
-- `GET /get?service_name=...` - Retrieve provider API key.
+- `GET /get?service_name=...` - Confirm a provider key is stored. Returns `service_type`,
+  `service_name` and `api_key_preview` (`***` + last four characters), same as `/store`.
+  **Breaking:** the plaintext `api_key` is no longer returned — no client needs it, and the
+  server reads keys from the database directly.
 - `GET /resync-status?service_name=...` - Current re-sync job:
-  `{ status, total, processed, succeeded, failed[], updatedAt }`. `status` is
+  `{ status, total, processed, succeeded, failed[{ assistant_id, error }], error, createdAt,
+  updatedAt }`. There is no `job_id` field here: `_id` equals the `job_id` that `/store` and
+  `/resync` return. `status` is
   `running | completed | error | interrupted` (`interrupted` = a running job that stalled, e.g.
   a process restart — safe to re-trigger).
 - `POST /resync` - Manually (re-)trigger the re-sync for one provider. Body: `service_name`.
@@ -480,7 +509,10 @@ provider have all been migrated — see [Applied migrations](#applied-migrations
 
 ### Web Call (`/api/web-call`)
 
-- `POST /get-token` - Generate web call token (AI agent call). Body: `assistant_id`, `metadata?`.
+- `POST /get-token` - Generate web call token (AI agent call). Body: `assistant_id`, `metadata?`,
+  `text_only?`. Upstream response passed through: `{ success, message, data: { room_name, token } }`
+  — the token is `data.token`, not a top-level `room_token`.
+  `text_only: true` on a realtime assistant is a `400`.
 
 ### Passthrough Call (`/api/passthrough-call`)
 
@@ -627,7 +659,7 @@ Layer rules (see `.agents/skills/node-service-structure/`):
 - `src/<domain>/` — business logic and orchestration.
 - `src/services/<upstream>/` — external I/O clients only; `axios` appears nowhere else.
 - `src/core/` — config, DB access, middleware, logging. `process.env` appears nowhere else.
-- Every error path returns `{ error: message }` via `src/core/middleware/errorHandler.js` — handlers never build error bodies.
+- Every error path returns `{ error: message }` (plus `suggestions` on assistant validation) via `src/core/middleware/errorHandler.js` — handlers never build error bodies.
 - Logging goes through `getLogger(module)`; no `console.*` in application code, and never
   log an upstream response body (they carry API keys).
 

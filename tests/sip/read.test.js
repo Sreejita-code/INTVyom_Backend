@@ -8,40 +8,83 @@ const stubModule = (request, exports) => {
   require.cache[filename] = { id: filename, filename, loaded: true, exports, children: [], paths: [] };
 };
 
-// trunk_config holds the Twilio username/password: neither read path may return it.
-const TRUNK = { _id: 't1', trunk_name: 'Main', trunk_config: { username: 'u', password: 'secret' } };
-let projection = null;
+// Contract change (was: trunk_config projected out entirely). The frontend needs the
+// trunk's address and phone numbers, so every read path now returns an allow-listed
+// trunk_config. The credentials (username/password) and any unknown key must never leak.
+const TWILIO_CONFIG = {
+  address: 'example.pstn.twilio.com',
+  numbers: ['+15550100000'],
+  username: 'AC123',
+  password: 'secret',
+  some_future_key: 'x',
+};
+const TRUNK = { _id: 't1', trunk_name: 'Main', trunk_type: 'twilio', trunk_config: TWILIO_CONFIG };
+const EXOTEL_TRUNK = {
+  _id: 't2',
+  trunk_name: 'Exotel',
+  trunk_type: 'exotel',
+  trunk_config: { exotel_number: '+918044319240', sip_host: 'sip.exotel.com', sip_port: 5070, sip_domain: 'exo' },
+};
+
+const asDoc = (plain) => ({ ...plain, toObject() { return JSON.parse(JSON.stringify(plain)); } });
+
+let listed = [];
 let storedTrunk = null;
 
-stubModule('../../src/services/livekit/livekitService', { EXTERNAL_BASE: 'https://stub', callExternal: async () => ({}) });
+stubModule('../../src/services/livekit/livekitService', {
+  EXTERNAL_BASE: 'https://stub',
+  callExternal: async () => ({ data: { trunk_id: 'ST_new' } }),
+});
 stubModule('../../src/auth/userAccess', async () => ({ _id: 'u1', api_key: 'user-key' }));
 stubModule('../../src/core/db/schemas/user.model', { findById: async () => ({ _id: 'u1' }) });
-stubModule('../../src/core/db/schemas/sip.model', {
-  find: () => ({
-    sort: () => ({
-      select: async (fields) => {
-        projection = fields;
-        return [];
-      },
-    }),
-  }),
-});
+
+function FakeSipTrunk(doc) { Object.assign(this, doc); }
+FakeSipTrunk.prototype.save = async function save() {
+  const plain = { ...this };
+  return asDoc(plain);
+};
+FakeSipTrunk.find = () => ({ sort: () => listed });
+stubModule('../../src/core/db/schemas/sip.model', FakeSipTrunk);
 stubModule('../../src/core/db/functions/findByLocalOrExternalId', async () => storedTrunk);
 
-const { listSipTrunks, getSipTrunkDetails } = require('../../src/sip/sip.service');
+const { listSipTrunks, getSipTrunkDetails, createOutboundTrunk } = require('../../src/sip/sip.service');
 
-test('the trunk list projects trunk_config out at the query', async () => {
-  await listSipTrunks('u1');
-  assert.strictEqual(projection, '-trunk_config');
+const assertNoSecrets = (config) => {
+  assert.strictEqual('username' in config, false);
+  assert.strictEqual('password' in config, false);
+  assert.strictEqual('some_future_key' in config, false);
+};
+
+test('the trunk list returns the non-secret trunk_config fields only', async () => {
+  listed = [asDoc(TRUNK), asDoc(EXOTEL_TRUNK)];
+  const { data } = await listSipTrunks('u1');
+
+  assert.deepStrictEqual(data[0].trunk_config, { address: 'example.pstn.twilio.com', numbers: ['+15550100000'] });
+  assertNoSecrets(data[0].trunk_config);
+  assert.deepStrictEqual(data[1].trunk_config, EXOTEL_TRUNK.trunk_config);
 });
 
-test('trunk details drop trunk_config from a mongoose document and from a plain object', async () => {
-  for (const trunk of [{ ...TRUNK, toObject() { return { ...TRUNK }; } }, { ...TRUNK }]) {
+test('trunk details return the allow-listed trunk_config from a document and a plain object', async () => {
+  for (const trunk of [asDoc(TRUNK), { ...TRUNK }]) {
     storedTrunk = trunk;
     const { data } = await getSipTrunkDetails('u1', 't1');
-    assert.strictEqual('trunk_config' in data, false);
     assert.strictEqual(data.trunk_name, 'Main');
+    assert.deepStrictEqual(data.trunk_config.numbers, ['+15550100000']);
+    assertNoSecrets(data.trunk_config);
   }
   // The stored record itself is untouched.
-  assert.ok(storedTrunk.trunk_config);
+  assert.strictEqual(storedTrunk.trunk_config.password, 'secret');
+});
+
+test('the create response never echoes the SIP credentials', async () => {
+  const trunk = await createOutboundTrunk({
+    user_id: 'u1',
+    trunk_name: 'Main',
+    trunk_type: 'Twilio',
+    trunk_config: TWILIO_CONFIG,
+  });
+
+  assert.strictEqual(trunk.external_trunk_id, 'ST_new');
+  assert.strictEqual(trunk.trunk_config.address, 'example.pstn.twilio.com');
+  assertNoSecrets(trunk.trunk_config);
 });

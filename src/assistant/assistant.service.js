@@ -7,6 +7,7 @@
 const Assistant = require('../core/db/schemas/assistant.model');
 const { callExternal } = require('../services/livekit/livekitService');
 const getUserWithKey = require('../auth/userAccess');
+const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExternalId');
 const {
   rejectRetiredModeAlias,
   normalizeMode,
@@ -188,10 +189,19 @@ const getAssistantDetails = async (userId, assistantId) => {
 
   // callExternal tags the thrown error with the upstream status, so a 404 here reaches
   // the client as a 404 without a message-string comparison.
-  return callExternal(user.api_key, {
+  const result = await callExternal(user.api_key, {
     path: `/assistant/details/${assistantId}`,
     fallback: 'Failed to fetch assistant details',
   });
+
+  // Upstream details omit assistant_end_call_webhook (api/assistant/get.md), so an editor
+  // could never show saved delivery tuning. The local mirror stores it; add it back when
+  // present. A missing mirror row is not an error — upstream stays the source of truth.
+  const mirror = await findByLocalOrExternalId(Assistant, assistantId, user._id, 'external_assistant_id');
+  if (mirror?.end_call_webhook && result?.data) {
+    result.data.assistant_end_call_webhook = mirror.end_call_webhook;
+  }
+  return result;
 };
 
 // --- 4. Delete Assistant (Existing) ---

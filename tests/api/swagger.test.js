@@ -61,3 +61,41 @@ test('every $ref in every operation resolves', () => {
 test('info.description stays an overview — details belong on the schemas', () => {
   assert.ok(doc.info.description.split('\n').length <= 40);
 });
+
+// These responses changed shape in the frontend contract audit. Clients copy the example, so a
+// synthesized one ("string" placeholders) is not good enough — each must carry an authored one,
+// and the trunk examples must show the allow-listed config without credentials.
+test('audited responses carry authored examples', () => {
+  const AUDITED = [
+    ['/api/assistant/list', 'get', '200'],
+    ['/api/assistant/details/{id}', 'get', '200'],
+    ['/api/sip/create-outbound-trunk', 'post', '201'],
+    ['/api/sip/list', 'get', '200'],
+    ['/api/sip/details/{id}', 'get', '200'],
+    ['/api/integration/get', 'get', '200'],
+    ['/api/integration/resync-status', 'get', '200'],
+    ['/api/web-call/get-token', 'post', '200'],
+    ['/api/assistant/call-logs/{id}', 'get', '200'],
+    ['/api/assistant/create', 'post', '400'],
+    ['/api/assistant/update/{id}', 'patch', '400'],
+  ];
+  for (const [p, method, code] of AUDITED) {
+    const examples = doc.paths[p][method].responses[code].content['application/json'].examples;
+    assert.ok(examples && Object.keys(examples).length > 0, `${method} ${p} ${code} has no authored example`);
+    const text = JSON.stringify(examples);
+    assert.ok(!text.includes('"password"') && !text.includes('"username"'), `${p} example leaks credentials`);
+    assert.ok(!text.includes('"api_key":"sk-'), `${p} example shows a plaintext key`);
+  }
+});
+
+// getSuggestedAlternatives returns an object keyed by slot ({ llm, llm_notes, ... }). The docs
+// once said string[], which sent clients looking for an array that never arrives.
+test('validation suggestions are documented as an object, not an array', () => {
+  const schema = resolveRefs(doc.components.schemas.Error, doc).properties.suggestions;
+  assert.strictEqual(schema.type, 'object');
+  assert.ok(schema.properties.llm && schema.properties.llm_notes);
+});
+
+test('no doc text points at the non-existent POST /api/integration/ route', () => {
+  assert.ok(!fs.readFileSync(path.join(root, 'swagger.yaml'), 'utf8').includes('`POST /api/integration/`'));
+});

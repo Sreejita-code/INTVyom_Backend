@@ -92,7 +92,11 @@ const eachLogPage = async (apiKey, externalAssistantId, queryParams, onLogs, onE
 // Resolve one of the user's assistants by local _id or external id.
 const resolveAssistant = async (userId, assistantId) => {
   const assistant = await findByLocalOrExternalId(Assistant, assistantId, userId, 'external_assistant_id');
-  if (!assistant) throw new Error('Assistant not found');
+  if (!assistant) {
+    const error = new Error('Assistant not found');
+    error.status = 404;
+    throw error;
+  }
   return assistant;
 };
 

@@ -4,6 +4,21 @@ const { callExternal } = require('../services/livekit/livekitService');
 const getUserWithKey = require('../auth/userAccess');
 const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExternalId');
 
+// trunk_config is an untyped Mixed blob that carries the Twilio username/password. Clients
+// need the address and phone numbers to display a trunk, so every response returns an
+// ALLOW-LIST of the non-secret keys documented in api/sip/create.md. A deny-list would leak
+// any key upstream or a caller adds later.
+const PUBLIC_TRUNK_CONFIG_KEYS = ['address', 'numbers', 'exotel_number', 'sip_host', 'sip_port', 'sip_domain'];
+
+const toPublicTrunk = (trunk) => {
+  const plain = trunk.toObject ? trunk.toObject() : { ...trunk };
+  const config = plain.trunk_config || {};
+  plain.trunk_config = Object.fromEntries(
+    PUBLIC_TRUNK_CONFIG_KEYS.filter((key) => config[key] !== undefined).map((key) => [key, config[key]])
+  );
+  return plain;
+};
+
 const createOutboundTrunk = async (data) => {
   const { user_id, trunk_name, trunk_type, trunk_config, passthrough_mode, passthrough_webhook_url } = data;
 
@@ -40,7 +55,7 @@ const createOutboundTrunk = async (data) => {
     ...(passthrough_webhook_url && { passthrough_webhook_url })
   });
 
-  return await newSipTrunk.save();
+  return toPublicTrunk(await newSipTrunk.save());
 };
 
 const listSipTrunks = async (userId) => {
@@ -51,17 +66,16 @@ const listSipTrunks = async (userId) => {
   try {
     // 2. Fetch SIP trunks directly from your local MongoDB
     // Using .sort({ createdAt: -1 }) to return the newest ones first.
-    // trunk_config holds the Twilio username/password; upstream withholds it from the list for
-    // security reasons (api/sip/list.md), so the proxy projects it out too.
+    // Upstream withholds trunk_config from its list entirely (api/sip/list.md); the proxy
+    // deliberately diverges and returns the non-secret subset so a UI can show numbers.
     const trunks = await SipTrunk.find({ user_id: user._id })
-      .sort({ createdAt: -1 })
-      .select('-trunk_config');
+      .sort({ createdAt: -1 });
 
     // 3. Return the data in a format similar to the old wrapper response
     return {
       success: true,
       message: "SIP trunks retrieved successfully from local database",
-      data: trunks
+      data: trunks.map(toPublicTrunk)
     };
   } catch (error) {
     throw new Error('Failed to fetch SIP trunks from local database: ' + error.message);
@@ -75,14 +89,9 @@ const getSipTrunkDetails = async (userId, trunkId) => {
   const trunk = await findByLocalOrExternalId(SipTrunk, trunkId, user._id, 'external_trunk_id');
   if (!trunk) throw new Error('SIP Trunk not found');
 
-  // trunk_config carries the Twilio username/password. Upstream documents no trunk-details
-  // endpoint and the list withholds the config, so never return it from the proxy either.
-  const safeTrunk = trunk.toObject ? trunk.toObject() : { ...trunk };
-  delete safeTrunk.trunk_config;
-
   return {
     success: true,
-    data: safeTrunk
+    data: toPublicTrunk(trunk)
   };
 };
 
