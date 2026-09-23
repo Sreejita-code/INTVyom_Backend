@@ -10,6 +10,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
+# The MCP docs server reports its version from package.json at require time.
+COPY --chown=nonroot:nonroot package.json ./package.json
 COPY --chown=nonroot:nonroot src ./src
 COPY --chown=nonroot:nonroot swagger.yaml ./swagger.yaml
 
