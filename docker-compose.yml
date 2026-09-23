@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: intvyom-api
+    container_name: intvoicekit-api
     ports:
       # Map host PORT -> container PORT (the app listens on process.env.PORT)
       - "${PORT:-3000}:${PORT:-3000}"

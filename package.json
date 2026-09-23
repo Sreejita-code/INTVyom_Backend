@@ -1,7 +1,7 @@
 {
-  "name": "intvyom-backend",
+  "name": "intvoicekit-backend",
   "version": "1.0.0",
-  "description": "Express + MongoDB backend for INTVyom voice assistant operations, proxying the LiveKit Agents API.",
+  "description": "Express + MongoDB backend for INTVoicekit voice assistant operations, proxying the LiveKit Agents API.",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",

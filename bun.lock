@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "intvyom-backend",
+      "name": "intvoicekit-backend",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.30.0",
         "axios": "^1.13.5",

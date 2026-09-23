@@ -3,13 +3,13 @@ info:
   title: INTVoicekit API
   description: |
     Backend API for INTVoicekit, a voice assistant platform (Express + MongoDB). It is a proxy
-    in front of the external Vyom LiveKit Agents API: it keeps local records for users,
+    in front of the upstream LiveKit Agents API: it keeps local records for users,
     assistants, SIP trunks, tools, inbound mappings and integrations, and forwards the work
     upstream on the caller's behalf.
 
     ## Authentication
     Every endpoint except `POST /api/auth/signup` and `POST /api/auth/login` requires the user's
-    upstream LiveKit key, sent as `Authorization: Bearer <api_key>`. A missing or unknown key is
+    VoiceKit API key (the `api_key` field), sent as `Authorization: Bearer <api_key>`. A missing or unknown key is
     a `401`. Obtain the key from signup or login. Identity comes from that key — a `user_id` in
     the request body or query string is ignored.
 
@@ -185,7 +185,8 @@ paths:
                         example: "john@acme.com"
                       api_key:
                         type: string
-                        example: "vyom_livekit_xxxxxxxxxxxxxxxx"
+                        description: Your VoiceKit API key. Send it as `Authorization: Bearer <api_key>`.
+                        example: "<your_voicekit_api_key>"
         '400':
           description: Missing credentials
           content:
@@ -205,7 +206,7 @@ paths:
       tags: [Assistant]
       summary: Create a new voice assistant
       description: |
-        Creates a voice assistant both locally in MongoDB and externally via the Vyom API.
+        Creates a voice assistant both locally in MongoDB and externally via the upstream LiveKit Agents API.
         Supports runtime modes `pipeline`, `realtime`, and `cascade`.
       requestBody:
         required: true
@@ -594,7 +595,7 @@ paths:
     patch:
       tags: [Assistant]
       summary: Update an assistant
-      description: Updates an assistant locally and on the external Vyom API.
+      description: Updates an assistant locally and on the upstream LiveKit Agents API.
       parameters:
         - $ref: '#/components/parameters/Id'
       requestBody:
@@ -1688,7 +1689,7 @@ paths:
     post:
       tags: [Tool]
       summary: Create a tool
-      description: Creates a tool both locally and externally via the Vyom API.
+      description: Creates a tool both locally and externally via the upstream LiveKit Agents API.
       requestBody:
         required: true
         content:
@@ -3430,7 +3431,7 @@ paths:
             example:
               assistant_id: 665f1a2b3c4d5e6f7a8b9c0d
               meeting_url: https://meet.google.com/abc-defg-hij
-              bot_display_name: Vyom Notetaker
+              bot_display_name: VoiceKit Notetaker
               metadata:
                 customer_name: John
       responses:
@@ -4410,7 +4411,7 @@ components:
           description: >
             `whisper-1` ONLY. Biases spellings and jargon (names, product terms). The
             `gpt-4o-transcribe` family accepts and ignores it — no error, no biasing.
-          example: "Vyom, LiveKit, Exotel, SIP trunk, Sarvam"
+          example: "VoiceKit, LiveKit, Exotel, SIP trunk, Sarvam"
         noise_reduction_type:
           type: string
           enum: [near_field, far_field]

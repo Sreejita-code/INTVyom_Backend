@@ -151,8 +151,9 @@ test('POST /mcp initialize reports the server name and says it is docs-only', as
   });
 
   assert.strictEqual(status, 200);
-  // Renamed from intvyom-swagger: the name now says what it is — documentation, not execution.
-  assert.strictEqual(json.result.serverInfo.name, 'intvyom-api-docs');
+  // Renamed intvyom-swagger -> intvyom-api-docs (docs, not execution), then -> intvoicekit-api-docs
+  // (product name is VoiceKit). Intentional contract change.
+  assert.strictEqual(json.result.serverInfo.name, 'intvoicekit-api-docs');
   assert.match(json.result.instructions, /documentation only/i);
   assert.match(json.result.instructions, /cannot call the API/);
 });

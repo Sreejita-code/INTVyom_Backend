@@ -28,7 +28,7 @@ const DOCS_ONLY = 'Docs only — does not call the API.';
 
 // Shown by MCP clients at connect time, before any tool call.
 const INSTRUCTIONS = [
-  'API documentation only. This server describes the INTVyom REST API from its swagger.yaml.',
+  'API documentation only. This server describes the INTVoicekit REST API from its swagger.yaml.',
   'It cannot call the API, holds no credentials and never changes data.',
   'To perform a request, send HTTP to the backend yourself with `Authorization: Bearer <api_key>`',
   '(every /api route except signup and login needs it).',
@@ -155,7 +155,7 @@ const renderEndpoint = ({ operation, path, method }, doc) => {
 
 const buildServer = (doc) => {
   const server = new McpServer(
-    { name: 'intvyom-api-docs', version: pkg.version },
+    { name: 'intvoicekit-api-docs', version: pkg.version },
     { instructions: INSTRUCTIONS }
   );
 
@@ -189,7 +189,7 @@ const buildServer = (doc) => {
   server.registerTool(
     'list_endpoints',
     {
-      description: `${DOCS_ONLY} List every endpoint in the INTVyom backend API, optionally filtered by tag.`,
+      description: `${DOCS_ONLY} List every endpoint in the INTVoicekit backend API, optionally filtered by tag.`,
       inputSchema: { tag: z.string().optional() }
     },
     async ({ tag }) => {

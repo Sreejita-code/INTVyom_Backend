@@ -1,10 +1,10 @@
-# INTVyom Backend
+# INTVoicekit Backend
 
-Express + MongoDB backend for INTVyom voice assistant operations.
+Express + MongoDB backend for INTVoicekit voice assistant operations.
 
 This service:
 - Manages local user and resource records in MongoDB.
-- Proxies most assistant-related operations to the external Vyom API.
+- Proxies most assistant-related operations to the upstream LiveKit Agents API.
 - Exposes module-based REST endpoints under `/api/*`.
 
 ## Response Envelope
@@ -50,7 +50,7 @@ Create `.env` in the project root (already ignored by git):
 
 ```env
 PORT=3000
-MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/intvyom?retryWrites=true&w=majority
+MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/intvoicekit?retryWrites=true&w=majority
 ```
 
 Every variable the runtime reads — all of them in `src/core/config.js`, mirrored by
@@ -133,7 +133,7 @@ clients this at connect time (MCP `instructions`), and every tool description st
 Point the frontend repo's `.mcp.json` at it:
 
 ```json
-{ "mcpServers": { "intvyom-api-docs": { "type": "http", "url": "http://localhost:3000/mcp" } } }
+{ "mcpServers": { "intvoicekit-api-docs": { "type": "http", "url": "http://localhost:3000/mcp" } } }
 ```
 
 Five tools:
@@ -160,9 +160,10 @@ two in the same change.
 ## Authentication
 
 **Breaking change (2026-09-22): every endpoint now requires a bearer key.** All routes except
-`POST /api/auth/signup` and `POST /api/auth/login` require the user's upstream LiveKit key in an
+`POST /api/auth/signup` and `POST /api/auth/login` require the user's **VoiceKit API key** (the `api_key` field) in an
 `Authorization: Bearer <api_key>` header; a missing or unknown key is a `401`. Obtain the key from
-signup or login. Identity comes from that key — a `user_id` in the body or query string is ignored,
+signup or login. The key string is issued upstream; older keys may still start with a `vyom_`
+prefix — it is the same VoiceKit API key, nothing to change. Identity comes from that key — a `user_id` in the body or query string is ignored,
 and no longer selects the tenant.
 
 Clients on the old unauthenticated path (`user_id` in the payload, no header) receive `401` until

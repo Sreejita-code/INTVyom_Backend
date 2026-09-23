@@ -11,7 +11,7 @@ const EXTERNAL_BASE = Settings.externalApiBase;
 const agent = new https.Agent({ rejectUnauthorized: false });
 
 /**
- * Call the external LiveKit-Vyom API and return response.data.
+ * Call the upstream LiveKit Agents API and return response.data.
  * @param {string|null} apiKey       user.api_key, sent as Bearer token. Pass null for
  *                                   the unauthenticated endpoints (key issuance).
  * @param {object} opts
