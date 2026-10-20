@@ -7,6 +7,10 @@ info:
     assistants, SIP trunks, tools, inbound mappings and integrations, and forwards the work
     upstream on the caller's behalf.
 
+    ## For agents
+    The same contract, the developer docs and a changelog are served over MCP at `/mcp`
+    (docs only; it never calls this API). Use `get_changelog` to see breaking changes.
+
     ## Authentication
     Every endpoint except `POST /api/auth/signup` and `POST /api/auth/login` requires the user's
     VoiceKit API key (the `api_key` field), sent as `Authorization: Bearer <api_key>`. A missing or unknown key is

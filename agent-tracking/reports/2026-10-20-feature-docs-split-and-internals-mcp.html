@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Docs split and internals MCP</title>
+<style>
+body{font:15px/1.55 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1b1f23}
+h1,h2{border-bottom:1px solid #d0d7de;padding-bottom:.2rem}
+table{border-collapse:collapse;width:100%;margin:.6rem 0}th,td{border:1px solid #d0d7de;padding:.35rem .6rem;text-align:left;vertical-align:top}
+th{background:#f6f8fa}code{background:#f6f8fa;padding:0 .25rem;border-radius:3px}
+.mermaid{background:#fff}
+</style></head><body>
+<h1>Docs split and internals MCP</h1>
+<p>Task <code>2026-10-20-feature-docs-split-and-internals-mcp</code> · feature · done</p>
+
+<h2>1. Summary</h2>
+<p>Asked: README for running, developer docs for internals, and an MCP so a frontend agent can read payloads, internals and changes. Done: README cut to a run guide (781 to 174 lines), five developer docs plus a changelog under <code>docs/</code>, and the existing <code>/mcp</code> server extended from 5 to 8 docs-only tools. No new dependency, no route or data change. <code>npm test</code>: 181 pass, 0 fail.</p>
+
+<h2>2. Scope</h2>
+<p>In: README, <code>docs/</code>, <code>src/mcp/</code>, Dockerfile, swagger info text, AGENTS.md repo sections. Out: API behaviour, MCP auth, site generator, swagger auto-diff. See <code>plans/&lt;slug&gt;/scope.md</code>.</p>
+
+<h2>3. Current to Target</h2>
+<pre class="mermaid">
+flowchart LR
+  subgraph Current
+    R0[README: run + endpoints + structure + data]:::old
+    S0[swagger.yaml] --> M0[/mcp 5 tools/]
+  end
+  subgraph Target
+    R1[README: run only]:::new
+    D1[docs/*.md]:::new --> DD[dev-docs.js]:::new --> M1[/mcp 8 tools/]:::new
+    S1[swagger.yaml] --> M1
+    C1[docs/CHANGELOG.md]:::new --> M1
+  end
+  classDef new fill:#d4f4dd,stroke:#2da44e
+  classDef old fill:#ffe3e3,stroke:#cf222e
+</pre>
+
+<h2>4. New request path</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant A as Frontend agent
+  participant M as /mcp
+  participant D as dev-docs Map
+  A->>M: tools/call get_dev_doc {name}
+  M->>D: Map.get(name)
+  D-->>M: text or null
+  M-->>A: doc text, or "No developer doc ... Available: ..."
+</pre>
+
+<h2>5. What was built</h2>
+<table><tr><th>Criterion</th><th>Result</th><th>Test</th></tr>
+<tr><td>README run-only</td><td>174 lines; links to docs, <code>/api-docs</code>, MCP</td><td>manual</td></tr>
+<tr><td>docs/ pages</td><td>ARCHITECTURE, UPSTREAM, DATA, ASSISTANT-RULES, DEVELOPING, CHANGELOG</td><td><code>tests/mcp/architecture.test.js</code></td></tr>
+<tr><td>3 new tools</td><td><code>list_dev_docs</code>, <code>get_dev_doc(name)</code>, <code>get_changelog(limit)</code></td><td><code>tests/mcp/swagger-mcp.test.js</code>, <code>tests/mcp/dev-docs.test.js</code></td></tr>
+<tr><td>Image has docs/</td><td><code>COPY docs ./docs</code> in Dockerfile</td><td>not built here</td></tr>
+<tr><td>Swagger link</td><td>"For agents" paragraph in <code>info.description</code></td><td>yamljs load ok</td></tr></table>
+<p>Beyond plan: <code>docs/ASSISTANT-RULES.md</code> holds README content that swagger does not (update semantics, key resolution, allowlists, webhook body, client notes) so nothing was lost when the endpoint list was cut.</p>
+
+<h2>6. Verification</h2>
+<p><code>npm test</code>: 181 tests, 181 pass. <code>node --check src/mcp/*.js</code> ok. <code>yamljs</code> loads <code>swagger.yaml</code>. Fresh-context review ran; fixed: unreadable-file handling, name length cap, wrong doc claims (dual ids, provider keys, 404 vs 401), lost README content (get_api removal, resync polling, list limit), weak tests.</p>
+
+<h2>7. Out-of-scope observations</h2>
+<table><tr><th>Where</th><th>Issue</th><th>Fix</th></tr>
+<tr><td><code>src/services/livekit/livekitService.js:11</code></td><td><code>rejectUnauthorized: false</code>: upstream TLS cert never verified while requests carry user API keys</td><td>enable verification or pass a CA</td></tr>
+<tr><td><code>src/assistant/assistant.service.js:215</code></td><td>local <code>findOneAndDelete</code> not scoped by <code>user_id</code></td><td>add <code>user_id</code> filter</td></tr>
+<tr><td><code>src/tool/tool.service.js:56,70</code></td><td>local update/delete unscoped by <code>user_id</code>; update <code>$set</code> takes whole body</td><td>scope by user, whitelist fields</td></tr>
+<tr><td><code>src/mcp/dev-docs.js</code> changelog split</td><td>splits on any <code>## </code> line, including inside code fences; current changelog has none</td><td>skip fenced lines if one is ever added</td></tr></table>
+<p>The TLS note is also disclosed in public <code>docs/UPSTREAM.md</code>; decide whether to keep that.</p>
+
+<h2>8. Trace and docs updated</h2>
+<p>scope, plan, progress under <code>agent-tracking/plans/2026-10-20-feature-docs-split-and-internals-mcp/</code>; research in <code>agent-tracking/research/</code>. Docs updated: README, AGENTS.md (repo sections), <code>docs/*</code>, swagger info.</p>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "neutral" });
+  for (const [i, el] of document.querySelectorAll("pre.mermaid").entries()) {
+    const { svg } = await mermaid.render(`mmd-${i}`, el.textContent);
+    el.outerHTML = svg;
+  }
+</script>
+</body></html>

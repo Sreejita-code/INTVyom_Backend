@@ -192,7 +192,8 @@ indexed (enforced by tool / rule / override) in
 # Repository rules
 
 Everything below is owned by this repo. `CLAUDE.md` only imports this file, so there is one
-copy of every rule. `README.md` is the developer guide (setup, endpoints, data stores); this
+copy of every rule. `README.md` is the run guide (setup, env, docker, deploy), `docs/` the developer docs (architecture,
+upstream usage, data, conventions, changelog), `swagger.yaml` the API contract; this
 file is for agents.
 
 This is an Express + MongoDB proxy in front of the LiveKit Agents REST API. The
@@ -279,7 +280,9 @@ When strictness and compatibility cannot both hold, say so in the plan and let t
 ## Documentation ships in the same change
 
 - `swagger.yaml`: request/response schemas, enums, per-field descriptions, new paths.
-- `README.md`: endpoint lists, reference tables, behavioural notes, project structure.
+- `README.md`: setup, env table, run and deploy steps, scripts. No endpoint lists: `swagger.yaml` owns them.
+- `docs/`: architecture and project structure, upstream behaviour, data stores, assistant rules.
+- `docs/CHANGELOG.md`: one line per contract change, **BREAKING** flagged. The MCP serves it.
 - `AGENTS.md`: only when a convention itself changed. `CLAUDE.md` is never edited.
 
 Document the traps, not just the fields: a default that is not what its name suggests, two
@@ -313,8 +316,8 @@ or two and deliver under a stated assumption; scaling the work down is the user'
 
 ## Project structure
 
-Pattern: layered, grouped by domain. The full annotated tree is in `README.md` â†’
-"Project Structure"; update both in the same change when folders move.
+Pattern: layered, grouped by domain. The full annotated tree is in `docs/ARCHITECTURE.md`;
+update both in the same change when folders move (a test fails if a `src/` folder is missing there).
 
 | Layer | Path | Rule |
 |-------|------|------|
@@ -323,4 +326,5 @@ Pattern: layered, grouped by domain. The full annotated tree is in `README.md` â
 | External I/O | `src/services/<upstream>/` | The only place `axios` appears. |
 | Infrastructure | `src/core/` | Config, DB, middleware, logging. The only place `process.env` is read. |
 | Tests | `tests/` | Mirrors `src/`. |
+| Developer docs | `docs/` | Markdown, read at startup by `src/mcp/dev-docs.js` and served by the MCP. No secrets: the MCP is public. |
 | Scripts | `scripts/` | Read-only audits and self-checks; migrations are deleted after they run. |

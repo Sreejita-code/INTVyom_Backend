@@ -14,6 +14,8 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=nonroot:nonroot package.json ./package.json
 COPY --chown=nonroot:nonroot src ./src
 COPY --chown=nonroot:nonroot swagger.yaml ./swagger.yaml
+# Developer docs served by the MCP dev-doc tools; without them those tools answer "no docs".
+COPY --chown=nonroot:nonroot docs ./docs
 
 EXPOSE 3000
 CMD ["src/index.js"]

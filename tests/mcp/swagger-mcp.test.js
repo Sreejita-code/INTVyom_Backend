@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
+const fs = require('node:fs');
 const YAML = require('yamljs');
 
 const createApp = require('../../src/server');
@@ -158,14 +159,18 @@ test('POST /mcp initialize reports the server name and says it is docs-only', as
   assert.match(json.result.instructions, /cannot call the API/);
 });
 
-test('tools/list returns exactly the five tools, each marked docs-only', async (t) => {
+test('tools/list returns exactly the eight tools, each marked docs-only', async (t) => {
   const { server, base } = await startApp();
   t.after(() => server.close());
 
   const { json } = await mcpPost(base, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
   const names = json.result.tools.map((tool) => tool.name).sort();
-  // get_overview was added so the API-wide conventions in info.description are reachable.
-  assert.deepStrictEqual(names, ['get_endpoint', 'get_overview', 'get_schema', 'list_endpoints', 'search_endpoints']);
+  // get_overview was added so the API-wide conventions in info.description are reachable; the dev
+  // doc and changelog tools were added so internals and recent changes are reachable too.
+  assert.deepStrictEqual(names, [
+    'get_changelog', 'get_dev_doc', 'get_endpoint', 'get_overview', 'get_schema',
+    'list_dev_docs', 'list_endpoints', 'search_endpoints'
+  ]);
   assert.ok(json.result.tools.every((tool) => tool.description.startsWith('Docs only')));
 });
 
@@ -263,6 +268,35 @@ test('tools/call answers bad input with readable text, not an exception', async 
 
   const noMatch = await call(7, 'search_endpoints', { query: 'zzzzzz' });
   assert.ok(noMatch.json.result.content[0].text.includes('No matches'));
+});
+
+test('dev doc tools list the docs, return one, and answer an unknown name with readable text', async (t) => {
+  const { server, base } = await startApp();
+  t.after(() => server.close());
+
+  const call = (id, name, args) => mcpPost(base, {
+    jsonrpc: '2.0',
+    id,
+    method: 'tools/call',
+    params: { name, arguments: args }
+  });
+  const textOf = (response) => response.json.result.content[0].text;
+
+  const docsDir = path.join(__dirname, '..', '..', 'docs');
+  const onDisk = fs.readdirSync(docsDir).filter((file) => file.endsWith('.md')).map((file) => file.slice(0, -3));
+  const list = textOf(await call(20, 'list_dev_docs', {}));
+  assert.deepStrictEqual(list.split('\n').map((line) => line.split(' — ')[0]).sort(), onDisk.sort());
+
+  const doc = textOf(await call(21, 'get_dev_doc', { name: 'ARCHITECTURE' }));
+  assert.strictEqual(doc, fs.readFileSync(path.join(docsDir, 'ARCHITECTURE.md'), 'utf8'));
+
+  const unknown = textOf(await call(22, 'get_dev_doc', { name: '../../package' }));
+  assert.match(unknown, /No developer doc .* Available: .*ARCHITECTURE/);
+
+  const changelog = textOf(await call(23, 'get_changelog', { limit: 1 }));
+  const newest = fs.readFileSync(path.join(docsDir, 'CHANGELOG.md'), 'utf8').match(/^## .+$/m)[0];
+  assert.ok(changelog.startsWith(newest));
+  assert.strictEqual(changelog.match(/^## /gm).length, 1);
 });
 
 test('GET /mcp is 405 because the server is stateless', async (t) => {

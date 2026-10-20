@@ -1,6 +1,7 @@
 /**
- * API documentation MCP — NOT an API execution MCP. Serves this backend's own swagger.yaml over
- * MCP (Model Context Protocol) so agents can read endpoint contracts and payloads.
+ * API documentation MCP — NOT an API execution MCP. Serves this backend's own swagger.yaml and
+ * the developer docs in docs/ over MCP (Model Context Protocol) so agents can read endpoint
+ * contracts, payloads, internals and the changelog.
  * Stateless Streamable HTTP: every POST builds a fresh server + transport, no sessions.
  *
  * Read-only by construction: it describes the API and never touches MongoDB, the upstream LiveKit
@@ -21,6 +22,7 @@ const {
   findEndpoint,
   searchEndpoints
 } = require('./swagger-index');
+const { loadDevDocs, listDevDocs, getDevDoc, getChangelog } = require('./dev-docs');
 
 const pkg = require('../../package.json');
 
@@ -33,6 +35,8 @@ const INSTRUCTIONS = [
   'To perform a request, send HTTP to the backend yourself with `Authorization: Bearer <api_key>`',
   '(every /api route except signup and login needs it).',
   'Start with get_overview for conventions, then search_endpoints / get_endpoint for contracts.',
+  'list_dev_docs / get_dev_doc explain how the backend works internally and uses the upstream',
+  'LiveKit API; get_changelog lists recent changes, breaking ones flagged.',
 ].join(' ');
 
 const textResult = (text) => ({ content: [{ type: 'text', text }] });
@@ -153,7 +157,7 @@ const renderEndpoint = ({ operation, path, method }, doc) => {
   return sections.join('\n');
 };
 
-const buildServer = (doc) => {
+const buildServer = (doc, devDocs) => {
   const server = new McpServer(
     { name: 'intvoicekit-api-docs', version: pkg.version },
     { instructions: INSTRUCTIONS }
@@ -279,18 +283,61 @@ const buildServer = (doc) => {
     }
   );
 
+  server.registerTool(
+    'list_dev_docs',
+    {
+      description: `${DOCS_ONLY} List the developer docs: architecture, how the backend uses the upstream LiveKit API, data stores, conventions.`,
+      inputSchema: {}
+    },
+    async () => {
+      const docs = listDevDocs(devDocs);
+      if (docs.length === 0) return textResult('No developer docs are available on this server.');
+      return textResult(docs.map(({ name, title }) => `${name} — ${title}`).join('\n'));
+    }
+  );
+
+  server.registerTool(
+    'get_dev_doc',
+    {
+      description: `${DOCS_ONLY} Full text of one developer doc, by the name list_dev_docs returns.`,
+      inputSchema: { name: z.string().max(100) }
+    },
+    async ({ name }) => {
+      const found = getDevDoc(devDocs, name);
+      if (!found) {
+        const names = listDevDocs(devDocs).map((doc) => doc.name).join(', ');
+        return textResult(`No developer doc '${name}'. Available: ${names || 'none'}`);
+      }
+      return textResult(found.text);
+    }
+  );
+
+  server.registerTool(
+    'get_changelog',
+    {
+      description: `${DOCS_ONLY} Newest changelog entries first, breaking API changes flagged. Check before relying on an old payload shape.`,
+      inputSchema: { limit: z.number().int().min(1).max(50).default(5) }
+    },
+    async ({ limit }) => {
+      const entries = getChangelog(devDocs, limit);
+      if (!entries) return textResult('No changelog is available on this server.');
+      return textResult(entries.join('\n\n'));
+    }
+  );
+
   return server;
 };
 
 /**
  * @param {object} swaggerDocument already-parsed swagger.yaml (do not re-load it here)
+ * @param {Map} [devDocs] developer docs; read from docs/ when omitted
  * @returns {import('express').Router}
  */
-const createMcpRouter = (swaggerDocument) => {
+const createMcpRouter = (swaggerDocument, devDocs = loadDevDocs()) => {
   const router = express.Router();
 
   router.post('/', express.json(), asyncHandler(async (req, res) => {
-    const server = buildServer(swaggerDocument);
+    const server = buildServer(swaggerDocument, devDocs);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       transport.close();

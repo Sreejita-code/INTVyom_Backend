@@ -8,3 +8,4 @@ Status: `scoping` · `researching` · `awaiting-approval` · `approved` · `in-p
 |------|------|------|--------|---------|--------|
 | 2026-10-20 | 2026-10-20-audit-upstream-1-6-0-drift | audit | done | Drift audit of the proxy against upstream api-livekit-docs 1.6.0 (new duplex mode, model changes, new endpoints): gaps, security, validation | reports/2026-10-20-audit-upstream-1-6-0-drift.html |
 | 2026-10-20 | 2026-10-20-feature-upstream-1-6-0-sync | feature | done | Sync proxy with upstream 1.6.0: duplex mode, model lists, TTS rules, repair path, migration | - |
+| 2026-10-20 | 2026-10-20-feature-docs-split-and-internals-mcp | feature | done | Split docs (README run-only, DEVELOPERS.md internals, swagger MCP) and add internals/changes MCP tools | reports/2026-10-20-feature-docs-split-and-internals-mcp.html |
