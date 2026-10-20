@@ -3,6 +3,16 @@
  * the resync job, and scripts/check-assistant-payload.js.
  */
 
+const {
+  ELEVENLABS_TTS_MODELS,
+  SARVAM_V3_SPEAKERS: SARVAM_SPEAKERS,
+  SARVAM_TTS_LANGUAGES,
+  assertElevenLabsModelAllowed,
+  assertSarvamSpeakerAllowed,
+  assertSarvamTargetLanguageAllowed,
+  assertTtsConfigAllowed,
+} = require('./tts-rules');
+
 const badRequest = (message) => {
   const error = new Error(message);
   error.status = 400;
@@ -21,6 +31,8 @@ const OPENAI_REALTIME_MODELS = [
   'gpt-realtime',
   'gpt-realtime-1.5',
   'gpt-realtime-2',
+  'gpt-realtime-2.1',
+  'gpt-realtime-2.1-mini',
   'gpt-realtime-2025-08-28',
   'gpt-realtime-mini',
 ];
@@ -59,12 +71,17 @@ const OPENAI_CASCADE_MODELS = [
   'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
   'gpt-4o', 'gpt-4o-mini',
   'gpt-5', 'gpt-5-mini', 'gpt-5-nano',
-  'gpt-5.1',
   'gpt-5.2',
-  'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano',
+  'gpt-5.4', 'gpt-5.4-mini',
   'gpt-5.5',
   'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+  'gpt-6-luna', 'gpt-6-sol',
 ];
+
+// Removed in upstream 1.6.0 (OpenAI retires both on 2027-04-01). New writes are refused, but a
+// stored row still runs: only a request that names one is rejected, never an unrelated edit, so
+// the owner can still reach the assistant to move it. Replacements are the ones LiveKit names.
+const RETIRED_CASCADE_MODELS = { 'gpt-5.1': 'gpt-6-sol', 'gpt-5.4-nano': 'gpt-6-luna' };
 
 // STT providers per mode. `native` means "the realtime model transcribes itself", so it is
 // pipeline-only. The four plugin providers are cascade-native but are *accepted* in pipeline:
@@ -103,7 +120,7 @@ const ASSISTANT_FIELDS = [
 const rejectRetiredModeAlias = (data = {}) => {
   if (data.assistant_llm_mode !== undefined) {
     throw badRequest(
-      "assistant_llm_mode is retired — use assistant_mode ('pipeline', 'realtime', or 'cascade')"
+      "assistant_llm_mode is retired — use assistant_mode ('pipeline', 'realtime', 'cascade', or 'duplex')"
     );
   }
 };
@@ -118,14 +135,20 @@ const pickAssistantFields = (data) => {
   return picked;
 };
 
+const MODES = ['pipeline', 'realtime', 'cascade', 'duplex'];
+
 const normalizeMode = (mode, defaultMode = 'pipeline') => {
   if (mode === undefined || mode === null || mode === '') return defaultMode;
   const normalized = String(mode).toLowerCase();
-  if (normalized !== 'pipeline' && normalized !== 'realtime' && normalized !== 'cascade') {
-    throw badRequest("assistant_mode must be one of 'pipeline', 'realtime', or 'cascade'");
+  if (!MODES.includes(normalized)) {
+    throw badRequest("assistant_mode must be one of 'pipeline', 'realtime', 'cascade', or 'duplex'");
   }
   return normalized;
 };
+
+// Only pipeline and cascade run separate TTS/STT stages. Realtime and duplex models hear and
+// speak for themselves; upstream stores a TTS/STT block sent to them and never reads it.
+const hasSpeechPipeline = (mode) => mode === 'pipeline' || mode === 'cascade';
 
 const sanitizeInteractionConfigForMode = (interactionConfig, mode) => {
   if (!interactionConfig || typeof interactionConfig !== 'object') return interactionConfig;
@@ -169,6 +192,10 @@ const assertSttModelAllowedInMode = (mode, sttModel) => {
 const assertLlmModelAllowedInMode = (mode, provider, model) => {
   if (model === undefined || model === null || model === '') return;
 
+  // Duplex has its own model fields (`model` is always gpt-live-1, the reasoning model is
+  // `backend_model`); validateDuplexLlmConfig in assistant.validation.js checks them.
+  if (mode === 'duplex') return;
+
   const providerLower = String(provider).toLowerCase();
 
   if (providerLower === 'gemini') {
@@ -184,6 +211,13 @@ const assertLlmModelAllowedInMode = (mode, provider, model) => {
 
   const allowed = mode === 'cascade' ? OPENAI_CASCADE_MODELS : OPENAI_REALTIME_MODELS;
   if (allowed.includes(String(model))) return;
+
+  if (mode === 'cascade' && RETIRED_CASCADE_MODELS[model]) {
+    throw badRequest(
+      `assistant_llm_config.model '${model}' was removed — OpenAI retires it on 2027-04-01. ` +
+      `Send '${RETIRED_CASCADE_MODELS[model]}' (the replacement LiveKit names) in this request`
+    );
+  }
 
   const hint = mode === 'cascade'
     ? 'realtime model IDs belong to pipeline/realtime mode'
@@ -248,66 +282,10 @@ const assertSttModelIdAllowed = (provider, model) => {
   );
 };
 
-// TTS model ids. Only ElevenLabs takes a `model` key; the other providers pin theirs in the
-// factory (Cartesia `sonic-3`, Sarvam `bulbul:v3`, Mistral `voxtral-mini-tts-2603`). Neither v3
-// model reads `voice_settings.speed` — only the multilingual/turbo/flash models do.
-const ELEVENLABS_TTS_MODELS = [
-  'eleven_v3',
-  'eleven_v3_conversational',
-  'eleven_multilingual_v2',
-  'eleven_turbo_v2_5',
-  'eleven_flash_v2_5',
-];
-
+// TTS rules (ElevenLabs models and voice_settings, Sarvam Bulbul v3 / v4-flash) live in
+// tts-rules.js. Re-exported here so callers keep one import for payload rules.
 const assertTtsModelIdAllowed = (provider, model) => {
-  if (model === undefined || model === null || model === '') return;
-  if (String(provider || '').toLowerCase() !== 'elevenlabs') return;
-
-  if (ELEVENLABS_TTS_MODELS.includes(String(model))) return;
-  throw badRequest(
-    `'elevenlabs' does not have a TTS model called '${model}' — choose one of: ` +
-    `${quotedList(ELEVENLABS_TTS_MODELS)}`
-  );
-};
-
-// Sarvam `speaker` must come from the bulbul:v3 roster. The two Bulbul generations share no
-// speaker names, so every v2 name (`anushka`, `manisha`, `vidya`, `arya`, `abhilash`, `karun`,
-// `hitesh`) is invalid on the v3 model this platform pins. Unlike a bad language code, a bad
-// speaker is NOT substituted at call time — the call ends before it starts.
-const SARVAM_SPEAKERS = [
-  'aayan', 'aditya', 'advait', 'amelia', 'amit', 'ashutosh', 'dev', 'ishita', 'kabir',
-  'kavitha', 'kavya', 'manan', 'neha', 'pooja', 'priya', 'rahul', 'ratan', 'ritu', 'rohan',
-  'roopa', 'rupali', 'shreya', 'shruti', 'shubh', 'simran', 'sophia', 'suhani', 'sumit',
-  'tanya', 'varun',
-];
-
-const assertSarvamSpeakerAllowed = (ttsModel, speaker) => {
-  if (speaker === undefined || speaker === null || speaker === '') return;
-  if (String(ttsModel || '').toLowerCase() !== 'sarvam') return;
-
-  if (SARVAM_SPEAKERS.includes(String(speaker))) return;
-  throw badRequest(
-    `Sarvam speaker '${speaker}' is not available on bulbul:v3 — v2 and v3 share no speaker ` +
-    `names; bulbul:v3 speakers are: ${quotedList(SARVAM_SPEAKERS)}. Update ` +
-    'assistant_tts_config.speaker.'
-  );
-};
-
-// Bulbul v3 speaks 11 languages — a much shorter list than the 24 Sarvam STT codes, and the
-// two are easy to confuse because both are BCP-47 Indic. An unlisted code is replaced with
-// `en-IN` upstream, so the assistant would speak a language nobody chose.
-const SARVAM_TTS_LANGUAGES = [
-  'bn-IN', 'en-IN', 'gu-IN', 'hi-IN', 'kn-IN', 'ml-IN', 'mr-IN', 'od-IN', 'pa-IN', 'ta-IN', 'te-IN',
-];
-
-const assertSarvamTargetLanguageAllowed = (ttsModel, code) => {
-  if (code === undefined || code === null || code === '') return;
-  if (String(ttsModel || '').toLowerCase() !== 'sarvam') return;
-  if (SARVAM_TTS_LANGUAGES.includes(String(code))) return;
-  throw badRequest(
-    `Sarvam target_language_code '${code}' is not spoken by bulbul:v3 — choose one of: ` +
-    `${quotedList(SARVAM_TTS_LANGUAGES)}. Note 'en-IN', not 'en-US'.`
-  );
+  if (String(provider || '').toLowerCase() === 'elevenlabs') assertElevenLabsModelAllowed(model);
 };
 
 // `assistant_llm_config.service_tier`. `auto`/`default`/`fast`/`priority` work on every model;
@@ -319,7 +297,7 @@ const TOOL_CHOICES = ['auto', 'required', 'none'];
 // Create rule: pipeline and cascade have no realtime model to speak for them, so both halves of
 // the TTS pair are required. Realtime ignores TTS entirely.
 const assertTtsPairProvidedForMode = (mode, ttsModel, ttsConfig) => {
-  if (mode === 'realtime') return;
+  if (!hasSpeechPipeline(mode)) return;
 
   if (ttsModel === undefined || ttsModel === null || ttsModel === '') {
     throw badRequest(
@@ -338,7 +316,7 @@ const assertTtsPairProvidedForMode = (mode, ttsModel, ttsConfig) => {
 // reused. Changing provider without a config is also refused — the stored config belongs to the
 // old provider and sending `{}` would fail upstream.
 const assertTtsPairForModeUpdate = ({ targetMode, storedTtsModel, ttsModelSent, ttsConfigSent }) => {
-  if (targetMode === 'realtime') return;
+  if (!hasSpeechPipeline(targetMode)) return;
 
   const modelSent = ttsModelSent !== undefined && ttsModelSent !== null && ttsModelSent !== '';
   const configSent = ttsConfigSent !== undefined && ttsConfigSent !== null;
@@ -373,10 +351,14 @@ const inferTargetModeForUpdate = (updateData, existingMode) => {
 
   if (updateData.assistant_tts_model !== undefined || updateData.assistant_tts_config !== undefined ||
       updateData.assistant_stt_model !== undefined || updateData.assistant_stt_config !== undefined) {
-    return {
-      targetMode: normalizeMode(existingMode, 'pipeline') === 'cascade' ? 'cascade' : 'pipeline',
-      modeDerivedFromPayload: true
-    };
+    // A realtime or duplex assistant keeps its mode: upstream stores the speech block and
+    // ignores it, so the edit must not flip the assistant into pipeline. Only a row with a
+    // speech pipeline (or none stored) is inferred as pipeline/cascade.
+    const currentMode = normalizeMode(existingMode, 'pipeline');
+    if (!hasSpeechPipeline(currentMode)) {
+      return { targetMode: currentMode, modeDerivedFromPayload: false };
+    }
+    return { targetMode: currentMode, modeDerivedFromPayload: true };
   }
 
   return {
@@ -413,6 +395,7 @@ module.exports = {
   ASSISTANT_FIELDS,
   OPENAI_REALTIME_MODELS,
   OPENAI_CASCADE_MODELS,
+  RETIRED_CASCADE_MODELS,
   GEMINI_LIVE_MODELS,
   GEMINI_VOICES,
   SERVICE_TIERS,
@@ -429,12 +412,15 @@ module.exports = {
   assertTtsModelIdAllowed,
   assertSarvamSpeakerAllowed,
   assertSarvamTargetLanguageAllowed,
+  assertTtsConfigAllowed,
   assertTtsPairProvidedForMode,
   assertTtsPairForModeUpdate,
   rejectRetiredModeAlias,
   requestedModeFrom,
   pickAssistantFields,
   normalizeMode,
+  hasSpeechPipeline,
+  MODES,
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
   inferTargetModeForUpdate,

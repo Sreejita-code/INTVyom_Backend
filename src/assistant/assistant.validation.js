@@ -6,6 +6,7 @@
 const { 
   OPENAI_REALTIME_MODELS, 
   OPENAI_CASCADE_MODELS, 
+  RETIRED_CASCADE_MODELS,
   CASCADE_STT_MODELS, 
   PIPELINE_STT_MODELS,
   GEMINI_LIVE_MODELS,
@@ -43,8 +44,13 @@ const VALID_LANGUAGE_CODES = {
 // Reasoning models: take `reasoning_effort`, reject `temperature`.
 const REASONING_MODELS = [
   'gpt-5', 'gpt-5-mini', 'gpt-5-nano',
-  'gpt-5.1', 'gpt-5.2', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano',
-  'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'
+  'gpt-5.2', 'gpt-5.4', 'gpt-5.4-mini',
+  'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+  // gpt-6 accepts reasoning_effort none/low/medium/high/xhigh (not minimal), verbosity and flex,
+  // and rejects temperature. A stored gpt-5.1 / gpt-5.4-nano row keeps working upstream until
+  // moved, so its family stays known for the knob checks below.
+  'gpt-6-luna', 'gpt-6-sol',
+  'gpt-5.1', 'gpt-5.4-nano'
 ];
 
 // Non-reasoning chat models: `temperature` yes, `reasoning_effort` no. The retired
@@ -99,6 +105,19 @@ const unsupportedKnobReason = (model, knob, hasTools = false) => {
 
   return null;
 };
+
+// Duplex mode (OpenAI GPT-Live). `gpt-live-1` is the voice model; the reasoning and tools run
+// on a separate `backend_model`. Source: api-livekit-docs reference/models.md "GPT-Live".
+const RETIRED_MODEL_IDS = Object.keys(RETIRED_CASCADE_MODELS);
+
+// Retired models stay in REASONING_MODELS so a stored row's knobs are still checked, but a
+// duplex backend is a new choice and must be a current model.
+const DUPLEX_BACKEND_MODELS = REASONING_MODELS.filter((m) => !RETIRED_MODEL_IDS.includes(m));
+
+const DUPLEX_MODEL = 'gpt-live-1';
+const DUPLEX_VOICES = ['beacon', 'cedar', 'cinder', 'marin', 'stone', 'vesper'];
+const DUPLEX_DEFAULT_BACKEND_MODEL = 'gpt-5.6-luna';
+const DUPLEX_BACKEND_INSTRUCTIONS_MAX = 4000;
 
 // Detailed compatibility matrix with restrictions and notes
 const COMPATIBILITY_MATRIX = {
@@ -162,6 +181,27 @@ const COMPATIBILITY_MATRIX = {
       notes: 'TTS is ignored in realtime mode - the model produces its own audio'
     }
   },
+  duplex: {
+    llm: {
+      providers: ['openai'],
+      restrictions: {
+        openai: {
+          models: [DUPLEX_MODEL],
+          notes: 'GPT-Live voice model; the reasoning model goes in backend_model'
+        }
+      },
+      forbidden: ['gemini'],
+      notes: 'Gemini is not supported in duplex mode - GPT-Live is an OpenAI model'
+    },
+    stt: {
+      providers: null,
+      notes: 'STT is ignored in duplex mode - GPT-Live hears the caller itself'
+    },
+    tts: {
+      providers: null,
+      notes: 'TTS is ignored in duplex mode - GPT-Live speaks in its own voice'
+    }
+  },
   cascade: {
     llm: {
       providers: ['openai'],
@@ -215,6 +255,11 @@ const PROVIDER_COMPATIBILITY = {
     stt: null, // STT is ignored in realtime mode
     tts: null  // TTS is ignored in realtime mode
   },
+  duplex: {
+    llm: ['openai'], // GPT-Live is an OpenAI model
+    stt: null, // STT is ignored in duplex mode
+    tts: null  // TTS is ignored in duplex mode
+  },
   cascade: {
     llm: ['openai'], // only openai allowed in cascade mode
     stt: CASCADE_STT_MODELS,
@@ -237,7 +282,7 @@ const validateProviderCombination = (mode, llmProvider, sttProvider, ttsProvider
   if (!modeRules) {
     return {
       isValid: false,
-      message: `Invalid mode '${mode}'. Valid modes are: pipeline, realtime, cascade`
+      message: `Invalid mode '${mode}'. Valid modes are: pipeline, realtime, cascade, duplex`
     };
   }
   
@@ -281,6 +326,101 @@ const validateProviderCombination = (mode, llmProvider, sttProvider, ttsProvider
   }
   
   return { isValid: true, message: 'Valid provider combination' };
+};
+
+/**
+ * Why a model-gated generation setting in `assistant_llm_config` cannot go to `model`, or null.
+ * Shared by cascade (the LLM itself) and duplex (the backend model).
+ */
+const generationKnobError = (model, parameters, tools) => {
+  // `flex` is gpt-5 generation only — on a chat model OpenAI refuses it on every turn, and on
+  // some models does not even name the parameter, which is how an assistant ends up in silence.
+  if (parameters.service_tier !== undefined && parameters.service_tier !== null) {
+    const tier = String(parameters.service_tier).toLowerCase();
+    if (tier === 'flex' && !GPT5_GENERATION.includes(model)) {
+      return `assistant_llm_config.service_tier 'flex' is not supported by model '${model}' — ` +
+             "flex is a gpt-5 generation tier. Use 'auto', 'default', 'fast' or 'priority' " +
+             'instead, or leave it unset.';
+    }
+  }
+
+  // Check each model-gated knob against the family table. A knob the model does not read is
+  // not ignored by OpenAI: it answers 400 on every LLM turn, so the call connects and the
+  // assistant never speaks. Rejecting here means the operator finds out at save time.
+  for (const knob of ['temperature', 'reasoning_effort', 'verbosity']) {
+    if (parameters[knob] === undefined || parameters[knob] === null) {
+      continue;
+    }
+    const reason = unsupportedKnobReason(model, knob, tools);
+    if (reason) {
+      return `assistant_llm_config.${knob} is not supported by model '${model}' — ${reason}.`;
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Duplex `assistant_llm_config`: GPT-Live is the voice, `backend_model` does the reasoning and
+ * runs the tools, so the generation knobs are checked against the backend, not `model`.
+ */
+const validateDuplexLlmConfig = (parameters, tools) => {
+  const fail = (message) => ({ isValid: false, message });
+
+  if (parameters.model !== undefined && parameters.model !== null && parameters.model !== DUPLEX_MODEL) {
+    return fail(
+      `assistant_llm_config.model '${parameters.model}' is not valid in duplex mode — the only ` +
+      `value is '${DUPLEX_MODEL}'; the reasoning model goes in backend_model`
+    );
+  }
+
+  if (parameters.voice !== undefined && parameters.voice !== null && !DUPLEX_VOICES.includes(parameters.voice)) {
+    return fail(
+      `assistant_llm_config.voice '${parameters.voice}' is not a GPT-Live voice — choose one of: ` +
+      DUPLEX_VOICES.join(', ')
+    );
+  }
+
+  const backend = parameters.backend_model ?? DUPLEX_DEFAULT_BACKEND_MODEL;
+  if (!DUPLEX_BACKEND_MODELS.includes(backend)) {
+    return fail(
+      `assistant_llm_config.backend_model '${backend}' is not a reasoning model — choose one of: ` +
+      DUPLEX_BACKEND_MODELS.join(', ')
+    );
+  }
+
+  const instructions = parameters.backend_instructions;
+  if (instructions !== undefined && instructions !== null &&
+      (typeof instructions !== 'string' || instructions.length > DUPLEX_BACKEND_INSTRUCTIONS_MAX)) {
+    return fail(
+      `assistant_llm_config.backend_instructions must be a string of at most ${DUPLEX_BACKEND_INSTRUCTIONS_MAX} characters`
+    );
+  }
+
+  const knobError = generationKnobError(backend, parameters, tools);
+  return knobError ? fail(knobError) : { isValid: true, message: 'Valid duplex model parameters' };
+};
+
+/**
+ * What duplex cannot do: GPT-Live cannot speak a fixed string, so a prerecorded greeting and
+ * filler words are refused when the assistant is saved instead of failing on the first call.
+ */
+const validateDuplexRestrictions = (config) => {
+  if (config.assistant_greeting_audio?.enabled === true) {
+    return {
+      isValid: false,
+      message: 'assistant_greeting_audio cannot be enabled in duplex mode — GPT-Live cannot play a ' +
+               'recording; with speaks_first it greets in its own words'
+    };
+  }
+  if (config.assistant_interaction_config?.filler_words === true) {
+    return {
+      isValid: false,
+      message: 'assistant_interaction_config.filler_words cannot be true in duplex mode — GPT-Live ' +
+               'handles backchannels itself and cannot speak a scripted filler'
+    };
+  }
+  return { isValid: true, message: 'No duplex restrictions violated' };
 };
 
 /**
@@ -334,6 +474,10 @@ const validateModelParameters = (mode, provider, model, parameters = {}, hasTool
     }
   }
 
+  if (mode === 'duplex') {
+    return validateDuplexLlmConfig(parameters, tools);
+  }
+
   if (!model) {
     return { isValid: true, message: 'No model-level validation needed' };
   }
@@ -341,7 +485,10 @@ const validateModelParameters = (mode, provider, model, parameters = {}, hasTool
   // Validate model is allowed for the mode
   let allowedModels;
   if (mode === 'cascade') {
-    allowedModels = OPENAI_CASCADE_MODELS;
+    // This check also runs against the merged stored row on every PATCH, so a retired model a
+    // row still holds passes here; assertLlmModelAllowedInMode refuses it when the request
+    // itself names the model or touches the LLM config.
+    allowedModels = [...OPENAI_CASCADE_MODELS, ...RETIRED_MODEL_IDS];
   } else {
     allowedModels = OPENAI_REALTIME_MODELS;
   }
@@ -357,35 +504,8 @@ const validateModelParameters = (mode, provider, model, parameters = {}, hasTool
     };
   }
 
-  // `flex` is gpt-5 generation only — on a chat model OpenAI refuses it on every turn, and on
-  // some models does not even name the parameter, which is how an assistant ends up in silence.
-  if (parameters.service_tier !== undefined && parameters.service_tier !== null) {
-    const tier = String(parameters.service_tier).toLowerCase();
-    if (tier === 'flex' && !GPT5_GENERATION.includes(model)) {
-      return {
-        isValid: false,
-        message: `assistant_llm_config.service_tier 'flex' is not supported by model '${model}' — ` +
-                 `flex is a gpt-5 generation tier. Use 'auto', 'default', 'fast' or 'priority' ` +
-                 'instead, or leave it unset.'
-      };
-    }
-  }
-
-  // Check each model-gated knob against the family table. A knob the model does not read is
-  // not ignored by OpenAI: it answers 400 on every LLM turn, so the call connects and the
-  // assistant never speaks. Rejecting here means the operator finds out at save time.
-  for (const knob of ['temperature', 'reasoning_effort', 'verbosity']) {
-    if (parameters[knob] === undefined || parameters[knob] === null) {
-      continue;
-    }
-    const reason = unsupportedKnobReason(model, knob, tools);
-    if (reason) {
-      return {
-        isValid: false,
-        message: `assistant_llm_config.${knob} is not supported by model '${model}' — ${reason}.`
-      };
-    }
-  }
+  const knobError = generationKnobError(model, parameters, tools);
+  if (knobError) return { isValid: false, message: knobError };
 
   return { isValid: true, message: 'Valid model parameters' };
 };
@@ -561,6 +681,13 @@ const validateAssistantConfiguration = (config) => {
     };
   }
   
+  if (mode === 'duplex') {
+    const restrictions = validateDuplexRestrictions(config);
+    if (!restrictions.isValid) {
+      return { isValid: false, message: restrictions.message };
+    }
+  }
+
   // Validate language codes for STT
   if (assistant_stt_config.language || assistant_stt_config.language_code) {
     const sttLanguageValidation = validateLanguageCodes(
@@ -582,7 +709,11 @@ const validateAssistantConfiguration = (config) => {
   if (assistant_tts_config.target_language_code) {
     if (String(ttsProvider || '').toLowerCase() === 'sarvam') {
       try {
-        assertSarvamTargetLanguageAllowed(ttsProvider, assistant_tts_config.target_language_code);
+        assertSarvamTargetLanguageAllowed(
+          ttsProvider,
+          assistant_tts_config.target_language_code,
+          assistant_tts_config.model || undefined
+        );
       } catch (err) {
         return {
           isValid: false,
@@ -609,6 +740,8 @@ const validateAssistantConfiguration = (config) => {
 module.exports = {
   validateProviderCombination,
   validateModelParameters,
+  DUPLEX_MODEL,
+  DUPLEX_VOICES,
   validateLanguageCodes,
   getSuggestedAlternatives,
   getCompatibilityInfo,

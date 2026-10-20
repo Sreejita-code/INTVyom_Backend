@@ -11,14 +11,14 @@ const findByLocalOrExternalId = require('../core/db/functions/findByLocalOrExter
 const {
   rejectRetiredModeAlias,
   normalizeMode,
+  hasSpeechPipeline,
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
   assertLlmModelAllowedInMode,
   assertLlmVoiceAllowedForProvider,
   assertSttModelIdAllowed,
   assertTtsModelIdAllowed,
-  assertSarvamSpeakerAllowed,
-  assertSarvamTargetLanguageAllowed,
+  assertTtsConfigAllowed,
   assertTtsPairProvidedForMode,
 } = require('./assistant.rules');
 const {
@@ -94,13 +94,11 @@ const createAssistant = async (data) => {
     assistant_mode: mode
   };
 
-  if (mode !== 'realtime') {
+  if (hasSpeechPipeline(mode)) {
     assertSttModelAllowedInMode(mode, assistant_stt_model);
     assertTtsPairProvidedForMode(mode, assistant_tts_model, assistant_tts_config);
-    assertSarvamSpeakerAllowed(assistant_tts_model, assistant_tts_config?.speaker);
-    assertSarvamTargetLanguageAllowed(assistant_tts_model, assistant_tts_config?.target_language_code);
+    assertTtsConfigAllowed(assistant_tts_model, assistant_tts_config);
     assertSttModelIdAllowed(assistant_stt_model, assistant_stt_config?.model);
-    assertTtsModelIdAllowed(assistant_tts_model, assistant_tts_config?.model);
 
     const finalTtsConfig = await buildPipelineTtsConfig({
       userId: user._id,

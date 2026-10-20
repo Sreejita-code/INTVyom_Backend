@@ -149,3 +149,80 @@ test('a language code inside a present config is still validated', () => {
 
   assert.strictEqual(result.isValid, false);
 });
+
+// --- duplex mode (GPT-Live) -------------------------------------------------------------------
+
+const duplex = (extra = {}) => validateAssistantConfiguration({
+  assistant_mode: 'duplex',
+  assistant_llm_config: { provider: 'openai' },
+  ...extra,
+});
+
+test('duplex accepts the defaults, a TTS-free config and a reasoning backend', () => {
+  assert.strictEqual(duplex().isValid, true);
+  assert.strictEqual(duplex({
+    assistant_llm_config: {
+      provider: 'openai', model: 'gpt-live-1', voice: 'cedar',
+      backend_model: 'gpt-5.5', backend_instructions: 'Answer briefly.', reasoning_effort: 'low',
+    },
+  }).isValid, true);
+});
+
+test('duplex rejects gemini, a realtime model id, a foreign voice and a chat backend', () => {
+  assert.match(duplex({ assistant_llm_config: { provider: 'gemini' } }).message, /not supported in duplex mode/);
+  assert.match(duplex({ assistant_llm_config: { provider: 'openai', model: 'gpt-realtime-1.5' } }).message, /only value is 'gpt-live-1'/);
+  assert.match(duplex({ assistant_llm_config: { provider: 'openai', voice: 'alloy' } }).message, /not a GPT-Live voice/);
+  assert.match(duplex({ assistant_llm_config: { provider: 'openai', backend_model: 'gpt-4.1' } }).message, /not a reasoning model/);
+});
+
+test('duplex refuses what GPT-Live cannot say: greeting audio and filler words', () => {
+  assert.match(
+    duplex({ assistant_greeting_audio: { enabled: true, audio_id: 'a1' } }).message,
+    /assistant_greeting_audio cannot be enabled in duplex mode/
+  );
+  assert.match(
+    duplex({ assistant_interaction_config: { filler_words: true } }).message,
+    /filler_words cannot be true in duplex mode/
+  );
+  // Disabled / false is the documented way through.
+  assert.strictEqual(duplex({
+    assistant_greeting_audio: { enabled: false },
+    assistant_interaction_config: { filler_words: false },
+  }).isValid, true);
+});
+
+test('duplex checks the generation knobs against backend_model, and never takes temperature', () => {
+  assert.match(
+    duplex({ assistant_llm_config: { provider: 'openai', temperature: 0.3 } }).message,
+    /temperature is not supported by model 'gpt-5.6-luna'/
+  );
+  assert.strictEqual(
+    duplex({ assistant_llm_config: { provider: 'openai', backend_model: 'gpt-5-mini', service_tier: 'flex' } }).isValid,
+    true
+  );
+  assert.match(
+    duplex({ assistant_llm_config: { provider: 'openai', backend_instructions: 'x'.repeat(4001) } }).message,
+    /at most 4000 characters/
+  );
+});
+
+test('gpt-6 is a reasoning model: reasoning_effort and verbosity yes, temperature no', () => {
+  for (const model of ['gpt-6-luna', 'gpt-6-sol']) {
+    assert.strictEqual(cascade(model, { reasoning_effort: 'low', verbosity: 'low', service_tier: 'flex' }).isValid, true);
+    assert.match(cascade(model, { temperature: 0.5 }).message, /reasoning models reject temperature/);
+  }
+});
+
+test('a stored gpt-5.1 row stays editable: the knob checks still know its family, only a request naming it is refused', () => {
+  // This runs against the merged stored row on every PATCH, so it must not lock the owner out.
+  assert.strictEqual(cascade('gpt-5.1', { reasoning_effort: 'low' }).isValid, true);
+  assert.match(cascade('gpt-5.4-nano', { temperature: 0.5 }).message, /reasoning models reject temperature/);
+  // ...but a duplex backend is a new choice and must be a current model.
+  assert.match(
+    validateAssistantConfiguration({
+      assistant_mode: 'duplex',
+      assistant_llm_config: { provider: 'openai', backend_model: 'gpt-5.1' },
+    }).message,
+    /not a reasoning model/
+  );
+});

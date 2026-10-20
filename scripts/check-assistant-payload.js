@@ -73,10 +73,15 @@ assert.deepStrictEqual(
 assert.throws(() => rejectRetiredModeAlias({ assistant_llm_mode: 'realtime' }), /retired/);
 assert.strictEqual(rejectRetiredModeAlias({ assistant_mode: 'cascade' }), undefined);
 assert.strictEqual(rejectRetiredModeAlias({}), undefined);
-// TTS/STT presence still implies pipeline.
+// TTS/STT presence implies pipeline on a pipeline row; realtime and duplex rows keep their mode
+// (upstream 1.6.0 stores the speech block there and ignores it).
+assert.deepStrictEqual(
+  inferTargetModeForUpdate({ assistant_tts_config: { speaker: 'anushka' } }, 'pipeline'),
+  { targetMode: 'pipeline', modeDerivedFromPayload: true }
+);
 assert.deepStrictEqual(
   inferTargetModeForUpdate({ assistant_tts_config: { speaker: 'anushka' } }, 'realtime'),
-  { targetMode: 'pipeline', modeDerivedFromPayload: true }
+  { targetMode: 'realtime', modeDerivedFromPayload: false }
 );
 // Existing cascade assistants stay in cascade when updating TTS/STT without an explicit mode.
 assert.deepStrictEqual(
@@ -84,8 +89,8 @@ assert.deepStrictEqual(
   { targetMode: 'cascade', modeDerivedFromPayload: true }
 );
 assert.deepStrictEqual(
-  inferTargetModeForUpdate({ assistant_stt_model: 'native' }, 'realtime'),
-  { targetMode: 'pipeline', modeDerivedFromPayload: true }
+  inferTargetModeForUpdate({ assistant_stt_model: 'native' }, 'duplex'),
+  { targetMode: 'duplex', modeDerivedFromPayload: false }
 );
 // Unrelated edit: fall back to the stored mode, and to pipeline when there is none.
 assert.deepStrictEqual(
@@ -143,7 +148,7 @@ assert.deepStrictEqual(
 
 // --- model / voice / speaker allowlists -------------------------------------
 // Realtime IDs: new ones in, the retired preview pair out (probed 2026-08-13).
-for (const model of ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-2025-08-28', 'gpt-realtime-mini']) {
+for (const model of ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini', 'gpt-realtime-2025-08-28', 'gpt-realtime-mini']) {
   assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'openai', model), `realtime accepts ${model}`);
 }
 assert.throws(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-realtime-1.5'), /not valid in cascade/);

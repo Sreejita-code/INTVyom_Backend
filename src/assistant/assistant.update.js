@@ -10,15 +10,14 @@ const {
   badRequest,
   rejectRetiredModeAlias,
   requestedModeFrom,
+  hasSpeechPipeline,
   pickAssistantFields,
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
   assertLlmModelAllowedInMode,
   assertLlmVoiceAllowedForProvider,
   assertSttModelIdAllowed,
-  assertTtsModelIdAllowed,
-  assertSarvamSpeakerAllowed,
-  assertSarvamTargetLanguageAllowed,
+  assertTtsConfigAllowed,
   assertTtsPairForModeUpdate,
   inferTargetModeForUpdate,
   resolvePairForUpdate,
@@ -50,6 +49,28 @@ const LOCAL_FIELD_BY_PAYLOAD_KEY = {
   assistant_end_call_webhook: 'end_call_webhook',
   assistant_greeting_audio: 'greeting_audio',
 };
+
+const notFound = (message) => {
+  const error = new Error(message);
+  error.status = 404;
+  return error;
+};
+
+// Key-by-key merge of an assistant_llm_config PATCH into the stored one — upstream's partial
+// update contract. `null` on a key removes it; an omitted key keeps what the row holds.
+const mergeLlmConfig = (stored, patch) => {
+  const merged = { ...(stored || {}), ...(patch || {}) };
+  for (const key of Object.keys(merged)) {
+    if (merged[key] === null) delete merged[key];
+  }
+  return merged;
+};
+
+// Upstream replaces the stored LLM config outright, instead of merging, when the mode leaves
+// realtime (a Gemini voice or key must not survive under another provider) and on any switch
+// into or out of duplex (no model id is valid in both).
+const replacesStoredLlmConfig = (fromMode, toMode) =>
+  fromMode !== toMode && ((fromMode === 'realtime') || (fromMode === 'duplex') || (toMode === 'duplex'));
 
 // Realtime carries no speech pipeline — drop both halves of TTS and STT.
 const stripPipelineFields = (payload) => {
@@ -101,12 +122,19 @@ const applySttPair = async (payload, updateData, existingAssistant, userId, targ
 };
 
 // Fields the local record mirrors after the upstream patch is accepted.
-const buildLocalUpdateFields = (updateData, existingAssistant, { targetMode, provider, modeChanged, providerChanged }) => {
+const buildLocalUpdateFields = (
+  updateData,
+  existingAssistant,
+  { targetMode, provider, modeChanged, providerChanged, llmConfig }
+) => {
   const fields = {};
 
   for (const [payloadKey, localField] of Object.entries(LOCAL_FIELD_BY_PAYLOAD_KEY)) {
     if (updateData[payloadKey] !== undefined) fields[localField] = updateData[payloadKey];
   }
+
+  // The mirror holds the merged config, as upstream does — not the partial the caller sent.
+  if (llmConfig !== undefined) fields.llm_config = llmConfig;
 
   // Upstream merges assistant_end_call_webhook key by key, so the mirror must too: patching
   // timeout_seconds alone keeps the stored attempts. A null object is mirrored as-is.
@@ -140,6 +168,7 @@ const updateAssistant = async (userId, assistantId, updateData) => {
 
   // Validate Assistant Configuration
   const existingAssistant = await Assistant.findOne({ external_assistant_id: assistantId });
+  if (!existingAssistant) throw notFound('Assistant not found for this user');
 
   const modeRequestedExplicitly = requestedModeFrom(updateData) !== undefined;
   const llmConfigProvided = updateData.assistant_llm_config !== undefined;
@@ -158,16 +187,28 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   // `assistant_mode` is pinned to the resolved target mode so the merged row is validated as the
   // mode it will actually run as — otherwise a cascade row without a mode in the request would
   // validate as `pipeline` and report the wrong family error.
+  const replacesStoredLlm = modeRequestedExplicitly &&
+    replacesStoredLlmConfig(existingAssistant.llm_mode ?? 'pipeline', targetMode);
+  const mergedLlmConfig = replacesStoredLlm
+    ? mergeLlmConfig({}, updateData.assistant_llm_config)
+    : mergeLlmConfig(existingAssistant.llm_config, updateData.assistant_llm_config);
   const mergedConfig = {
     ...existingAssistant.toObject(),
     ...updateData,
-    assistant_mode: targetMode
+    assistant_mode: targetMode,
+    // The stored row names these without the `assistant_` prefix; the duplex restrictions
+    // (no greeting audio, no filler words) must see the merged result, not only the request.
+    assistant_greeting_audio: {
+      ...(existingAssistant.greeting_audio || {}),
+      ...(updateData.assistant_greeting_audio || {}),
+    },
+    assistant_interaction_config: {
+      ...(existingAssistant.interaction_config || {}),
+      ...(updateData.assistant_interaction_config || {}),
+    },
   };
-  if (updateData.assistant_llm_config !== undefined && existingAssistant.llm_config) {
-    mergedConfig.assistant_llm_config = {
-      ...existingAssistant.llm_config,
-      ...updateData.assistant_llm_config
-    };
+  if (updateData.assistant_llm_config !== undefined || replacesStoredLlm) {
+    mergedConfig.assistant_llm_config = mergedLlmConfig;
   }
   const validation = validateAssistantConfiguration(mergedConfig);
   if (!validation.isValid) {
@@ -210,42 +251,34 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     assertLlmModelAllowedInMode(
       targetMode,
       provider,
-      updateData.assistant_llm_config?.model ?? existingAssistant?.llm_config?.model
+      // A stored duplex config has no model valid in another mode: upstream replaces it.
+      existingAssistant.llm_mode === 'duplex'
+        ? updateData.assistant_llm_config?.model
+        : updateData.assistant_llm_config?.model ?? existingAssistant?.llm_config?.model
     );
 
     // Voice is validated per vendor against the MERGED config: switching provider while the
     // old vendor's voice stays on the row is exactly the bug this catches (the two rosters
     // share no names). Gated on an LLM/mode touch so unrelated edits to legacy rows pass.
-    const mergedLlm = {
-      ...(existingAssistant?.llm_config || {}),
-      ...(updateData.assistant_llm_config || {}),
-    };
-    assertLlmVoiceAllowedForProvider(mergedLlm.provider || provider, mergedLlm.voice);
+    assertLlmVoiceAllowedForProvider(mergedLlmConfig.provider || provider, mergedLlmConfig.voice);
   }
 
   // Request-carried speech values are checked here (not on the merged row): a bad speaker or
   // model id stored before this gate existed is a runtime failure upstream, not an API error,
   // so an unrelated edit must not be blocked. Anything the caller sends now is rejected.
-  if (targetMode !== 'realtime') {
-    assertSarvamSpeakerAllowed(
-      updateData.assistant_tts_model ?? existingAssistant?.tts_model,
-      updateData.assistant_tts_config?.speaker
-    );
-    // Request-only, like the speaker assert: a stored out-of-roster code must not block a rename,
-    // but a value the caller sends now is refused with a readable 400.
-    assertSarvamTargetLanguageAllowed(
-      updateData.assistant_tts_model ?? existingAssistant?.tts_model,
-      updateData.assistant_tts_config?.target_language_code
-    );
-    assertSttModelIdAllowed(
-      updateData.assistant_stt_model ?? existingAssistant?.stt_model,
-      updateData.assistant_stt_config?.model
-    );
-    assertTtsModelIdAllowed(
-      updateData.assistant_tts_model ?? existingAssistant?.tts_model,
-      updateData.assistant_tts_config?.model
-    );
-  }
+  // A stored out-of-roster speaker or language must not block a rename, but a value the caller
+  // sends now is refused with a readable 400. The stored config is only a fallback for the
+  // Sarvam / ElevenLabs model, and only while the provider is unchanged.
+  const ttsProvider = updateData.assistant_tts_model ?? existingAssistant?.tts_model;
+  assertTtsConfigAllowed(
+    ttsProvider,
+    updateData.assistant_tts_config,
+    ttsProvider === existingAssistant?.tts_model ? existingAssistant?.tts_config : undefined
+  );
+  assertSttModelIdAllowed(
+    updateData.assistant_stt_model ?? existingAssistant?.stt_model,
+    updateData.assistant_stt_config?.model
+  );
 
   // Whitelist, not a spread: only fields the external API knows about go out.
   const externalUpdatePayload = pickAssistantFields(updateData);
@@ -276,13 +309,19 @@ const updateAssistant = async (userId, assistantId, updateData) => {
   if (shouldIncludeModeInExternal) externalUpdatePayload.assistant_mode = targetMode;
   else delete externalUpdatePayload.assistant_mode;
 
+  // A mode switch re-sends the stored pair only when the target runs a speech pipeline;
+  // realtime and duplex rows touch it only when the request carries TTS/STT fields.
+  const ttsFieldsSent =
+    updateData.assistant_tts_model !== undefined || updateData.assistant_tts_config !== undefined;
+  const sttFieldsSent =
+    updateData.assistant_stt_model !== undefined || updateData.assistant_stt_config !== undefined;
+  const resendsStoredPair = hasSpeechPipeline(targetMode) && modeDerivedFromPayload;
+  const ttsTouched = ttsFieldsSent || resendsStoredPair;
+  const sttTouched = sttFieldsSent || resendsStoredPair;
+
   // TTS must exist in some form when a pipeline/cascade update sends a mode (explicit or
   // TTS/STT-derived) — but only then: an unrelated rename on a legacy row without TTS is legal.
-  const ttsTouched =
-    updateData.assistant_tts_model !== undefined ||
-    updateData.assistant_tts_config !== undefined ||
-    modeDerivedFromPayload;
-  if (targetMode !== 'realtime' && (shouldIncludeModeInExternal || ttsTouched)) {
+  if (hasSpeechPipeline(targetMode) && (shouldIncludeModeInExternal || ttsTouched)) {
     assertTtsPairForModeUpdate({
       targetMode,
       storedTtsModel: existingAssistant?.tts_model,
@@ -291,9 +330,9 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     });
   }
 
-  if (targetMode === 'realtime') {
+  if (modeRequestedExplicitly && targetMode === 'realtime') {
     stripPipelineFields(externalUpdatePayload);
-  } else {
+  } else if (hasSpeechPipeline(targetMode) || ttsTouched || sttTouched) {
     // Re-check the STT selection against the merged result, not just the request: switching an
     // assistant into cascade while it still holds `native` is unrunnable even though neither
     // half of the request is wrong on its own.
@@ -306,10 +345,6 @@ const updateAssistant = async (userId, assistantId, updateData) => {
 
     if (ttsTouched) await applyTtsPair(externalUpdatePayload, updateData, existingAssistant, user._id);
 
-    const sttTouched =
-      updateData.assistant_stt_model !== undefined ||
-      updateData.assistant_stt_config !== undefined ||
-      modeDerivedFromPayload;
     if (sttTouched) await applySttPair(externalUpdatePayload, updateData, existingAssistant, user._id, targetMode);
   }
 
@@ -325,6 +360,9 @@ const updateAssistant = async (userId, assistantId, updateData) => {
     provider,
     modeChanged: shouldIncludeModeInExternal,
     providerChanged: llmConfigProvided || shouldIncludeModeInExternal,
+    // undefined leaves the mirror untouched; null is what upstream leaves after a replace with
+    // no new config.
+    llmConfig: llmConfigProvided ? mergedLlmConfig : (replacesStoredLlm ? null : undefined),
   });
 
   const updatedAssistant = await Assistant.findOneAndUpdate(

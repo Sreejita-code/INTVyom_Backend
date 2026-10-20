@@ -9,11 +9,8 @@
 const mongoose = require('mongoose');
 const connectDB = require('../src/core/db/dbConnect');
 const Assistant = require('../src/core/db/schemas/assistant.model');
-const {
-  SARVAM_SPEAKERS,
-  SARVAM_TTS_LANGUAGES,
-  ELEVENLABS_TTS_MODELS,
-} = require('../src/assistant/assistant.rules');
+const { RETIRED_CASCADE_MODELS } = require('../src/assistant/assistant.rules');
+const { assertTtsConfigAllowed } = require('../src/assistant/tts-rules');
 
 // Upstream answers 422 for these: the *-chat-latest aliases retired on 2026-06-19, chat-latest
 // and gpt-oss-120b are not served by api.openai.com, and gemini-live-2.5-flash-native-audio is
@@ -31,8 +28,6 @@ const DEAD_LLM_MODELS = [
 // upstream prices every call it accepts.
 const DEAD_STT_MODELS = ['saaras:v2.5', 'saarika:v2.5', 'nova-2'];
 
-const isSet = (value) => value !== undefined && value !== null && value !== '';
-
 const findingsFor = (assistant) => {
   const findings = [];
   const id = assistant.external_assistant_id;
@@ -47,23 +42,20 @@ const findingsFor = (assistant) => {
     findings.push([id, 'stt_config.model', sttModel, 'sunset by the provider or unpriced (upstream 422)']);
   }
 
-  if (String(assistant.tts_model || '').toLowerCase() === 'sarvam') {
-    const speaker = assistant.tts_config?.speaker;
-    if (isSet(speaker) && !SARVAM_SPEAKERS.includes(String(speaker))) {
-      findings.push([id, 'tts_config.speaker', speaker, 'not on the bulbul:v3 roster — the call ends before it starts']);
-    }
-
-    const code = assistant.tts_config?.target_language_code;
-    if (isSet(code) && !SARVAM_TTS_LANGUAGES.includes(String(code))) {
-      findings.push([id, 'tts_config.target_language_code', code, 'not spoken by bulbul:v3 — substituted with en-IN upstream']);
+  // Retired in upstream 1.6.0: a stored row still runs, but upstream refuses every PATCH to it
+  // until it moves. scripts/migrate-retired-models.js moves them.
+  for (const [field, value] of [['llm_config.model', llmModel], ['llm_config.backend_model', assistant.llm_config?.backend_model]]) {
+    if (RETIRED_CASCADE_MODELS[value]) {
+      findings.push([id, field, value, `retired by OpenAI on 2027-04-01 — move to ${RETIRED_CASCADE_MODELS[value]}`]);
     }
   }
 
-  if (String(assistant.tts_model || '').toLowerCase() === 'elevenlabs') {
-    const ttsModel = assistant.tts_config?.model;
-    if (isSet(ttsModel) && !ELEVENLABS_TTS_MODELS.includes(String(ttsModel))) {
-      findings.push([id, 'tts_config.model', ttsModel, 'not an ElevenLabs TTS model upstream accepts (upstream 422)']);
-    }
+  // Speaker, language, limits and ElevenLabs settings are judged against the row's own TTS model,
+  // so a stored bulbul:v4-flash row is not flagged for using a v4-flash speaker.
+  try {
+    assertTtsConfigAllowed(assistant.tts_model, assistant.tts_config);
+  } catch (err) {
+    findings.push([id, 'tts_config', assistant.tts_model, err.message]);
   }
 
   return findings;

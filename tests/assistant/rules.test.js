@@ -5,6 +5,7 @@ const {
   pickAssistantFields,
   rejectRetiredModeAlias,
   normalizeMode,
+  hasSpeechPipeline,
   sanitizeInteractionConfigForMode,
   assertSttModelAllowedInMode,
   assertLlmModelAllowedInMode,
@@ -47,11 +48,12 @@ test('rejectRetiredModeAlias throws on the retired assistant_llm_mode key', () =
   assert.strictEqual(rejectRetiredModeAlias({}), undefined);
 });
 
-test('normalizeMode accepts the three known modes and defaults', () => {
+test('normalizeMode accepts the four known modes and defaults', () => {
+  assert.strictEqual(normalizeMode('Duplex'), 'duplex');
   assert.strictEqual(normalizeMode('Realtime'), 'realtime');
   assert.strictEqual(normalizeMode(undefined, 'pipeline'), 'pipeline');
   assert.strictEqual(normalizeMode('', 'cascade'), 'cascade');
-  assert.throws(() => normalizeMode('hybrid'), /pipeline.*realtime.*cascade/);
+  assert.throws(() => normalizeMode('hybrid'), /pipeline.*realtime.*cascade.*duplex/);
 });
 
 test('sanitizeInteractionConfigForMode forces filler_words off in realtime', () => {
@@ -108,7 +110,7 @@ test('assertLlmModelAllowedInMode splits the realtime and cascade model families
 });
 
 test('assertLlmModelAllowedInMode: the new realtime IDs are accepted, the retired pair is not', () => {
-  for (const model of ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-2025-08-28', 'gpt-realtime-mini']) {
+  for (const model of ['gpt-realtime', 'gpt-realtime-1.5', 'gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini', 'gpt-realtime-2025-08-28', 'gpt-realtime-mini']) {
     assert.doesNotThrow(() => assertLlmModelAllowedInMode('realtime', 'openai', model), `${model} should be accepted`);
   }
   // Probed 2026-08-13: the account does not serve the preview pair — storing one produced a
@@ -207,6 +209,8 @@ test('assertTtsPairProvidedForMode requires both halves in pipeline/cascade, nev
   assert.throws(() => assertTtsPairProvidedForMode('pipeline', 'cartesia', undefined), /assistant_tts_config is required/);
   assert.throws(() => assertTtsPairProvidedForMode('cascade', undefined, { voice_id: 'v1' }), /assistant_tts_model is required/);
   assert.doesNotThrow(() => assertTtsPairProvidedForMode('realtime', undefined, undefined));
+  // Duplex has no TTS stage either: GPT-Live speaks for itself.
+  assert.doesNotThrow(() => assertTtsPairProvidedForMode('duplex', undefined, undefined));
 });
 
 test('assertTtsPairForModeUpdate only demands the pair when nothing is stored', () => {
@@ -248,9 +252,19 @@ test('inferTargetModeForUpdate: explicit mode wins, TTS/STT imply pipeline', () 
     inferTargetModeForUpdate({ assistant_llm_mode: 'cascade' }, 'pipeline'),
     { targetMode: 'pipeline', modeDerivedFromPayload: false }
   );
+  // Contract change (upstream 1.6.0 sync): realtime and duplex rows keep their mode on a
+  // TTS/STT-only edit; the mode is not sent upstream.
   assert.deepStrictEqual(
     inferTargetModeForUpdate({ assistant_tts_config: { speaker: 'anushka' } }, 'realtime'),
-    { targetMode: 'pipeline', modeDerivedFromPayload: true }
+    { targetMode: 'realtime', modeDerivedFromPayload: false }
+  );
+  assert.deepStrictEqual(
+    inferTargetModeForUpdate({ assistant_stt_model: 'sarvam' }, 'duplex'),
+    { targetMode: 'duplex', modeDerivedFromPayload: false }
+  );
+  assert.deepStrictEqual(
+    inferTargetModeForUpdate({ assistant_mode: 'duplex' }, 'pipeline'),
+    { targetMode: 'duplex', modeDerivedFromPayload: true }
   );
   // Existing cascade assistants stay in cascade on TTS/STT-only updates.
   assert.deepStrictEqual(
@@ -263,6 +277,10 @@ test('inferTargetModeForUpdate: explicit mode wins, TTS/STT imply pipeline', () 
     { targetMode: 'pipeline', modeDerivedFromPayload: false }
   );
   assert.throws(() => inferTargetModeForUpdate({ assistant_mode: 'hybrid' }, 'pipeline'), /pipeline.*realtime.*cascade/);
+});
+
+test('hasSpeechPipeline is true only for pipeline and cascade', () => {
+  assert.deepStrictEqual(['pipeline', 'cascade', 'realtime', 'duplex'].map(hasSpeechPipeline), [true, true, false, false]);
 });
 
 test('resolvePairForUpdate seeds config from the stored assistant', () => {
@@ -300,4 +318,20 @@ test('resolvePairForUpdate seeds config from the stored assistant', () => {
     resolvePairForUpdate({ assistant_stt_model: 'native' }, stored, 'stt'),
     { model: 'native', config: undefined }
   );
+});
+
+test('upstream 1.6.0 models: gpt-realtime-2.1 pair and gpt-6 in, gpt-5.1 and gpt-5.4-nano out', () => {
+  for (const mode of ['pipeline', 'realtime']) {
+    for (const model of ['gpt-realtime-2.1', 'gpt-realtime-2.1-mini']) {
+      assert.doesNotThrow(() => assertLlmModelAllowedInMode(mode, 'openai', model), `${mode} accepts ${model}`);
+    }
+  }
+  for (const model of ['gpt-6-luna', 'gpt-6-sol']) {
+    assert.doesNotThrow(() => assertLlmModelAllowedInMode('cascade', 'openai', model), `cascade accepts ${model}`);
+  }
+  // A request naming a retired model is refused with the replacement spelled out.
+  assert.throws(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-5.1'), /removed.*'gpt-6-sol'/);
+  assert.throws(() => assertLlmModelAllowedInMode('cascade', 'openai', 'gpt-5.4-nano'), /removed.*'gpt-6-luna'/);
+  // Duplex validates its own model fields elsewhere.
+  assert.doesNotThrow(() => assertLlmModelAllowedInMode('duplex', 'openai', 'gpt-live-1'));
 });

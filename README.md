@@ -210,18 +210,21 @@ Additional fields for create/update:
 - `assistant_greeting_audio`: Object `{ "enabled": bool, "audio_id": string }`. When enabled and `interaction_config.speaks_first=true`, plays the prerecorded clip instead of a model-generated greeting.
 
 Mode-aware fields for create/update:
-- `assistant_mode`: `pipeline` (default), `realtime`, or `cascade`.
+- `assistant_mode`: `pipeline` (default), `realtime`, `cascade`, or `duplex` (OpenAI GPT-Live).
 - `assistant_llm_config`: LLM config object. Forwarded in **all** modes. `provider` is `openai`
   in pipeline and cascade, `gemini` or `openai` in realtime. `model` is validated against a
   per-mode allowlist (Gemini Live IDs and voices are closed lists too). Cascade adds seven
   generation knobs (`temperature`, `max_output_tokens`,
   `reasoning_effort`, `service_tier`, `verbosity`, `tool_choice`, `parallel_tool_calls`) —
-  accepted in every mode, read only in cascade.
+  accepted in every mode, read only in cascade and duplex. `duplex` also takes `backend_model`
+  and `backend_instructions` (see Duplex mode below).
 - `assistant_tts_model` and `assistant_tts_config`: TTS fields (used when mode is `pipeline` or
-  `cascade`). `sarvam` takes `assistant_tts_config.speaker` from the 30-name `bulbul:v3` roster
-  (the v2 names are rejected); `elevenlabs` takes `assistant_tts_config.model` from
-  `eleven_v3` / `eleven_v3_conversational` / `eleven_multilingual_v2` / `eleven_turbo_v2_5` /
-  `eleven_flash_v2_5` (neither v3 model reads `voice_settings.speed`).
+  `cascade`; stored but never used in `realtime` and `duplex`). `sarvam` takes
+  `assistant_tts_config.speaker` from the chosen model's roster — 30 names on `bulbul:v3`, 224
+  `<voice>_<language>_<style>` names on `bulbul:v4-flash`, no names shared; `elevenlabs` takes
+  `assistant_tts_config.model` from `eleven_v3` / `eleven_v3_conversational` / `eleven_v4` /
+  `eleven_v4_turbo` / `eleven_multilingual_v2` / `eleven_turbo_v2_5` / `eleven_flash_v2_5`, and
+  `voice_settings` are checked against what that model reads (see TTS below).
 - `assistant_stt_model` and `assistant_stt_config`: STT fields. `sarvam` (default), `native`,
   `cartesia`, `deepgram`, `elevenlabs` or `openai`. The `assistant_stt_config.model` id is
   validated per provider (`saaras:v3`/`saaras:v4`, `ink-whisper`/`ink-2`, `nova-3`/`nova-3-general`/
@@ -322,8 +325,12 @@ One provider, one row. The map of model → `service_name` lives in
 `service_name` outside it with `400`.
 
 Other behavior:
-- `assistant_interaction_config.filler_words` is always forced to `false` in realtime mode.
-- Pipeline-only TTS fields are ignored/stripped when sending realtime updates.
+- `assistant_interaction_config.filler_words` is always forced to `false` in realtime mode, and
+  is a `400` when `true` in duplex mode.
+- Pipeline-only TTS/STT fields are stripped when the request switches the assistant to
+  `realtime`. A TTS/STT-only edit on a stored `realtime` or `duplex` assistant keeps its mode
+  (before upstream 1.6.0 it was inferred as `pipeline`): the mode is not sent, and upstream
+  stores the speech block without using it.
 - `cascade` mode: STT must be one of the five plugin providers, LLM provider must be `openai`.
 
 ### Models & Providers (reference)
@@ -356,9 +363,31 @@ under `openai` is the exact mistake this blocks).
 
 Cascade LLM — `provider` `openai` only; `model` validated (default `gpt-4.1`): `gpt-4.1`,
 `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`,
-`gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`,
-`gpt-5.6-terra`, `gpt-5.6-luna`. The realtime and cascade sets are **disjoint**: sending
-`gpt-4.1` in pipeline mode, or `gpt-realtime-1.5` in cascade, is a `400` either way.
+`gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
+`gpt-6-luna`, `gpt-6-sol`. The realtime and cascade sets are **disjoint**: sending
+`gpt-4.1` in pipeline mode, or `gpt-realtime-1.5` in cascade, is a `400` either way. The
+pipeline/realtime OpenAI set is `gpt-realtime`, `gpt-realtime-1.5` (default), `gpt-realtime-2`,
+`gpt-realtime-2.1`, `gpt-realtime-2.1-mini`, `gpt-realtime-2025-08-28`, `gpt-realtime-mini`.
+
+**Retired: `gpt-5.1` and `gpt-5.4-nano`** (OpenAI retires them on 2027-04-01; upstream 1.6.0
+removed them). A request that names one is a `400` naming the replacement (`gpt-6-sol`,
+`gpt-6-luna`). An assistant that already stores one is **not** locked out here: renames and other
+edits that do not touch `assistant_llm_config` or `assistant_mode` still go through, and a PATCH
+that sends the replacement model moves it. Upstream may itself refuse other PATCHes to such a
+row until it moves; `node scripts/migrate-retired-models.js` lists them, `--apply` moves them.
+The `gpt-6` models are reasoning models: `reasoning_effort` `none`…`xhigh` (not `minimal`),
+`verbosity` and `flex` accepted, `temperature` rejected.
+
+Duplex mode (`assistant_mode: "duplex"`, OpenAI GPT-Live): `provider` `openai` only; `model` is
+`gpt-live-1`; `voice` one of `beacon`, `cedar`, `cinder`, `marin` (default), `stone`, `vesper`;
+`backend_model` any current reasoning model (default `gpt-5.6-luna`) that runs reasoning and
+tools; `backend_instructions` up to 4000 characters. The generation knobs are checked against
+`backend_model`, and `temperature` is a `400`. GPT-Live cannot speak a fixed string, so an
+enabled `assistant_greeting_audio` and `filler_words: true` are `400`s, checked against the
+merged stored row on update (a stored recording or filler flag blocks the switch until the same
+request turns it off), and upstream refuses `text_only` web calls. TTS/STT fields are
+stored and ignored. Switching into or out of duplex replaces the stored `assistant_llm_config`
+(here and in the local mirror) instead of merging it; leaving `realtime` does the same.
 
 Generation knobs (cascade only, all optional): `temperature` (0–2), `max_output_tokens`,
 `reasoning_effort` (`none`…`max`), `service_tier` (`auto`/`default`/`fast`/`flex`/`priority`;
@@ -392,12 +421,26 @@ ISO 639-3 only, and a BCP-47 code does not degrade — Scribe closes the socket 
 `1008 invalid_request` on the first utterance and the call transcribes nothing.
 
 TTS — the synthesis model is fixed per provider **except ElevenLabs**, which takes a `model`
-key (`eleven_v3` default, `eleven_v3_conversational`, `eleven_multilingual_v2`,
-`eleven_turbo_v2_5`, `eleven_flash_v2_5`):
+key (`eleven_v3` default, `eleven_v3_conversational`, `eleven_v4`, `eleven_v4_turbo`,
+`eleven_multilingual_v2`, `eleven_turbo_v2_5`, `eleven_flash_v2_5`; the v1 models are rejected),
+and **Sarvam**, which takes `model` `bulbul:v3` (default) or `bulbul:v4-flash`:
 `cartesia` `sonic-3` (`voice_id`; plus `language`, `speed` 0–3, `volume` 0–3, `emotion`,
-`pronunciation_dict_id`), `sarvam` `bulbul:v3` (`speaker`; plus `target_language_code`, `pace`
-0.3–3.0, `speech_sample_rate`, `temperature` 0.01–2.0), `elevenlabs` (`voice_id`; plus
-`voice_settings`), `mistral` `voxtral-mini-tts-2603` (`voice_id`, no synthesis params).
+`pronunciation_dict_id`), `sarvam` (`speaker`; plus `target_language_code`, `pace`,
+`speech_sample_rate`, `temperature`), `elevenlabs` (`voice_id`; plus `voice_settings`),
+`mistral` `voxtral-mini-tts-2603` (`voice_id`, no synthesis params).
+
+Rules mirrored in `src/assistant/tts-rules.js` (one module; change it when upstream changes):
+- ElevenLabs `voice_settings` per model — `eleven_v3` reads only `stability`;
+  `eleven_v3_conversational` adds `use_speaker_boost`; `eleven_v4` / `eleven_v4_turbo` read
+  `stability` and `similarity_boost` (**not** `speed`); `eleven_turbo_v2_5` / `eleven_flash_v2_5`
+  all but `style` and `use_speaker_boost`; only `eleven_multilingual_v2` reads all five. A setting
+  the model ignores is a `400` (upstream `422`) — ElevenLabs itself would accept and ignore it.
+- Sarvam `bulbul:v3`: 30 speakers, `pace` 0.3–3.0, any of 7 sample rates, `temperature`
+  0.01–2.0. `bulbul:v4-flash`: 224 speakers, `pace` 0.5–2.0, sample rates 8000/16000/22050/24000,
+  `temperature` **rejected** (Sarvam fixes it at 0.6). Both speak 11 language codes (`en-IN`, not
+  `en-US`); only v4-flash speaks the 12 IN22 codes (`as-IN`, `ur-IN`, …), and only on a Sarvam
+  subscription that enables them, which cannot be checked here. A PATCH that sends only
+  `speaker`, `pace`… is judged against the stored Sarvam model.
 
 Speaking rate is spelled differently per provider and the keys are not interchangeable:
 cartesia `speed`, sarvam `pace`, elevenlabs `voice_settings.speed`. Mistral has none.
@@ -603,9 +646,13 @@ INTVyom_Backend/
 ├── docker-compose.yml
 ├── deploy.sh
 ├── .env.example
-├── AGENTS.md
+├── AGENTS.md                 # rules for AI agents (CLAUDE.md just imports it)
+├── swagger.yaml
+├── agent-tracking/           # per-task scope, plan, progress and reports from agent work
 ├── scripts/                  # one-off migrations and self-checks
 │   ├── audit-assistant-models.js     # read-only: lists stored assistants on retired model ids
+│   ├── migrate-retired-models.js     # one-time: moves gpt-5.1 / gpt-5.4-nano assistants to gpt-6-sol / gpt-6-luna
+│   ├── check-assistant-payload.js    # self-check for assistant payload rules
 │   └── audit-duplicate-usernames.js  # read-only: lists users sharing a user_name (blocks the unique index)
 ├── tests/                    # node --test suite, mirrors src/
 └── src/
@@ -619,6 +666,10 @@ INTVyom_Backend/
     │   ├── assistant.update.js   # update flow: target mode, upstream patch, local mirror
     │   ├── assistant.billing.js  # call logs + billable-minute aggregation (paged, bounded fan-out)
     │   ├── assistant.rules.js    # ASSISTANT_FIELDS, mode inference, pair resolution (pure)
+    │   ├── assistant.validation.js  # zod schemas + model/provider validation
+    │   ├── tts-rules.js          # per-provider TTS model/voice/language rules (pure)
+    │   ├── wizard.service.js     # guided assistant creation
+    │   ├── template.service.js   # starter templates (templates/)
     │   ├── assistant.builder.js  # TTS/STT/LLM config construction + key resolution
     │   ├── assistant.resync.js   # key-rotation re-sync job
     │   └── exporter.js       # platform-wise billable minutes xlsx workbook
@@ -655,7 +706,7 @@ INTVyom_Backend/
         └── logging/logger.js
 ```
 
-Layer rules (see `.agents/skills/node-service-structure/`):
+Layer rules:
 - `src/api/routes/` — HTTP surface only: validate, delegate, shape. No queries, no external calls.
 - `src/<domain>/` — business logic and orchestration.
 - `src/services/<upstream>/` — external I/O clients only; `axios` appears nowhere else.
@@ -689,7 +740,7 @@ either identifier.
 | Collection | Keyed by | Holds |
 |---|---|---|
 | `users` | `user_email` (unique) | account, bcrypt password hash, external `api_key` |
-| `assistants` | `user_id` + `external_assistant_id` | name, prompt, `llm_mode` (pipeline/realtime/cascade), `llm_provider`, LLM/TTS/STT config, interaction + end-call settings, greeting audio |
+| `assistants` | `user_id` + `external_assistant_id` | name, prompt, `llm_mode` (pipeline/realtime/cascade/duplex), `llm_provider`, LLM/TTS/STT config, interaction + end-call settings, greeting audio |
 | `siptrunks` | `user_id` + `external_trunk_id` | trunk name, type (`twilio`/`exotel`), trunk config, passthrough mode + webhook |
 | `tools` | `user_id` + `external_tool_id` | tool name, description, execution type, parameters, execution config |
 | `inbounds` | `external_inbound_id` (unique) | phone number (raw + normalized), service, attached assistant, context-strategy id, inbound config |
@@ -704,6 +755,13 @@ either identifier.
 - `npm test` - Run the `node --test` suite under `tests/`.
 - `node scripts/check-assistant-payload.js` - Self-check for assistant payload rules.
 - `node src/integration/providers.js` - Self-check for the provider key map.
+- `node scripts/audit-assistant-models.js` - Read-only. Lists stored assistants holding values
+  upstream now rejects (dead models, retired `gpt-5.1` / `gpt-5.4-nano`, bad Sarvam speakers or
+  languages, ElevenLabs settings the model ignores). Exit code 1 means findings.
+- `node scripts/migrate-retired-models.js` - One-time. Dry run lists assistants on `gpt-5.1` /
+  `gpt-5.4-nano` (also as duplex `backend_model`); `--apply` PATCHes each upstream to `gpt-6-sol` /
+  `gpt-6-luna` and only then updates the local mirror. Idempotent. Not yet applied: once it has
+  run in production, delete it and add it to "Applied migrations" below.
 - `node scripts/audit-duplicate-usernames.js` - Read-only. Lists users sharing a `user_name`.
   **Run it before deploying the unique `user_name` index:** Mongoose builds that index at
   startup and the build fails while duplicates exist, leaving the name unprotected. Mongoose

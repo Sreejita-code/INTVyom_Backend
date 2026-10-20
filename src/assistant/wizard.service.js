@@ -8,6 +8,10 @@ const {
   LANGUAGE_STANDARDS,
   VALID_LANGUAGE_CODES
 } = require('./assistant.validation');
+const { MODES, hasSpeechPipeline } = require('./assistant.rules');
+
+// An unset mode runs as pipeline, so it has a speech pipeline too.
+const usesSpeechPipeline = (mode) => hasSpeechPipeline(mode || 'pipeline');
 
 // Configuration steps for the wizard
 const CONFIGURATION_STEPS = [
@@ -28,14 +32,14 @@ const CONFIGURATION_STEPS = [
     title: 'Configure Text-to-Speech',
     description: 'Select and configure your text-to-speech provider',
     fields: ['assistant_tts_model', 'assistant_tts_config'],
-    condition: (config) => config.assistant_mode !== 'realtime'
+    condition: (config) => usesSpeechPipeline(config.assistant_mode)
   },
   {
     id: 'stt',
     title: 'Configure Speech-to-Text',
     description: 'Select and configure your speech-to-text provider',
     fields: ['assistant_stt_model', 'assistant_stt_config'],
-    condition: (config) => config.assistant_mode !== 'realtime'
+    condition: (config) => usesSpeechPipeline(config.assistant_mode)
   },
   {
     id: 'interaction',
@@ -127,7 +131,7 @@ const getStepDetails = (stepId, currentConfig = {}) => {
   if (stepId === 'mode') {
     details.validation_rules.assistant_mode = {
       required: true,
-      allowed_values: ['pipeline', 'realtime', 'cascade'],
+      allowed_values: ['pipeline', 'realtime', 'cascade', 'duplex'],
       default: 'pipeline'
     };
   }
@@ -257,8 +261,8 @@ const validateStep = (stepId, stepData, currentConfig = {}) => {
   if (stepId === 'mode') {
     if (!stepData.assistant_mode) {
       errors.push('Assistant mode is required');
-    } else if (!['pipeline', 'realtime', 'cascade'].includes(stepData.assistant_mode)) {
-      errors.push('Assistant mode must be one of: pipeline, realtime, cascade');
+    } else if (!MODES.includes(stepData.assistant_mode)) {
+      errors.push(`Assistant mode must be one of: ${MODES.join(', ')}`);
     }
   }
   
@@ -278,7 +282,7 @@ const validateStep = (stepId, stepData, currentConfig = {}) => {
     }
   }
   
-  if (stepId === 'tts' && currentConfig.assistant_mode !== 'realtime') {
+  if (stepId === 'tts' && usesSpeechPipeline(currentConfig.assistant_mode)) {
     if (!stepData.assistant_tts_model) {
       errors.push('TTS model is required');
     } else {
@@ -290,7 +294,7 @@ const validateStep = (stepId, stepData, currentConfig = {}) => {
     }
   }
   
-  if (stepId === 'stt' && currentConfig.assistant_mode !== 'realtime') {
+  if (stepId === 'stt' && usesSpeechPipeline(currentConfig.assistant_mode)) {
     if (!stepData.assistant_stt_model) {
       errors.push('STT model is required');
     } else {
@@ -325,9 +329,9 @@ const getCompletionStatus = (currentConfig = {}) => {
       completed = !!currentConfig.assistant_mode;
     } else if (step.id === 'llm') {
       completed = !!currentConfig.assistant_llm_config;
-    } else if (step.id === 'tts' && currentConfig.assistant_mode !== 'realtime') {
+    } else if (step.id === 'tts' && usesSpeechPipeline(currentConfig.assistant_mode)) {
       completed = !!currentConfig.assistant_tts_model;
-    } else if (step.id === 'stt' && currentConfig.assistant_mode !== 'realtime') {
+    } else if (step.id === 'stt' && usesSpeechPipeline(currentConfig.assistant_mode)) {
       completed = !!currentConfig.assistant_stt_model;
     } else if (step.id === 'interaction') {
       completed = !!currentConfig.assistant_interaction_config;

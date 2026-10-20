@@ -125,12 +125,13 @@ test('a stored gemini assistant cannot be switched to pipeline or cascade in one
     assert.strictEqual(sent.patch, null);
   }
 
-  // A TTS edit infers a mode too, and that inferred mode hits the same wall.
-  await assert.rejects(
-    () => updateAssistant('u1', 'ext-1', { assistant_tts_model: 'sarvam' }),
-    /cannot run on the stored LLM provider 'gemini'/
-  );
-  assert.strictEqual(sent.patch, null);
+  // Contract change (upstream 1.6.0 sync): a TTS-only edit on a realtime row no longer infers
+  // `pipeline`. Upstream stores the speech block and ignores it in realtime, so the request
+  // goes through with no mode attached and the assistant stays realtime.
+  await updateAssistant('u1', 'ext-1', { assistant_tts_model: 'sarvam' });
+  assert.strictEqual(sent.patch.data.assistant_mode, undefined);
+  assert.strictEqual(sent.patch.data.assistant_tts_model, 'sarvam');
+  sent.patch = null;
 
   // Sending the corrected provider in the SAME request is the documented way through.
   await updateAssistant('u1', 'ext-1', {
@@ -303,4 +304,113 @@ test('every documented update example in swagger.yaml passes local validation', 
   for (const [name, { value }] of Object.entries(examples)) {
     await assert.doesNotReject(() => updateAssistant('u1', 'ext-1', value), name);
   }
+});
+
+// --- upstream 1.6.0 sync: mirror merge, missing row, duplex ------------------------------------
+
+test('the local mirror holds the merged llm_config, with null removing a key', async () => {
+  storedAssistant.llm_mode = 'cascade';
+  storedAssistant.llm_config = { provider: 'openai', model: 'gpt-4.1', temperature: 0.7, max_output_tokens: 300 };
+
+  await updateAssistant('u1', 'ext-1', { assistant_llm_config: { temperature: null, model: 'gpt-4.1-mini' } });
+
+  assert.deepStrictEqual(sent.localUpdate.llm_config, {
+    provider: 'openai', model: 'gpt-4.1-mini', max_output_tokens: 300,
+  });
+});
+
+test('an assistant with no local row is a 404, not a TypeError', async () => {
+  storedAssistant = null;
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_name: 'x' }),
+    (err) => err.status === 404 && /Assistant not found/.test(err.message)
+  );
+  assert.strictEqual(sent.patch, null);
+});
+
+test('switching to duplex is refused while a greeting recording or filler words are stored', async () => {
+  storedAssistant.greeting_audio = { enabled: true, audio_id: 'a1' };
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_mode: 'duplex' }),
+    /assistant_greeting_audio cannot be enabled in duplex mode/
+  );
+
+  storedAssistant.greeting_audio = undefined;
+  storedAssistant.interaction_config = { filler_words: true };
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_mode: 'duplex' }),
+    /filler_words cannot be true in duplex mode/
+  );
+  assert.strictEqual(sent.patch, null);
+
+  // Sending both off in the same request is the documented way through.
+  await updateAssistant('u1', 'ext-1', {
+    assistant_mode: 'duplex',
+    assistant_greeting_audio: { enabled: false },
+    assistant_interaction_config: { filler_words: false },
+  });
+  assert.strictEqual(sent.patch.data.assistant_mode, 'duplex');
+  assert.strictEqual(sent.localUpdate.llm_mode, 'duplex');
+  assert.strictEqual(sent.localUpdate.llm_provider, 'openai');
+});
+
+test('crossing duplex replaces the stored llm_config instead of merging it', async () => {
+  storedAssistant.llm_mode = 'cascade';
+  storedAssistant.llm_config = { provider: 'openai', model: 'gpt-4.1', temperature: 0.7 };
+
+  // Stored temperature would be refused on the duplex backend if it were merged in.
+  await updateAssistant('u1', 'ext-1', {
+    assistant_mode: 'duplex',
+    assistant_llm_config: { voice: 'cedar' },
+  });
+  assert.deepStrictEqual(sent.localUpdate.llm_config, { voice: 'cedar' });
+
+  // No new config: upstream is left with none, and so is the mirror.
+  storedAssistant.llm_mode = 'duplex';
+  storedAssistant.llm_config = { provider: 'openai', model: 'gpt-live-1', backend_model: 'gpt-5.5' };
+  await updateAssistant('u1', 'ext-1', { assistant_mode: 'cascade' });
+  assert.strictEqual(sent.localUpdate.llm_config, null);
+});
+
+test('a TTS-only edit on a duplex row keeps the mode and forwards the stored speech block', async () => {
+  storedAssistant.llm_mode = 'duplex';
+  storedAssistant.tts_model = undefined;
+
+  await updateAssistant('u1', 'ext-1', { assistant_tts_model: 'cartesia', assistant_tts_config: { voice_id: 'v1' } });
+  assert.strictEqual(sent.patch.data.assistant_mode, undefined);
+  assert.strictEqual(sent.patch.data.assistant_tts_model, 'cartesia');
+  assert.strictEqual(sent.patch.data.assistant_tts_config.api_key, 'tts-cartesia-key');
+});
+
+test('a row holding a retired model: rename works, naming the model is refused, moving it works', async () => {
+  storedAssistant.llm_mode = 'cascade';
+  storedAssistant.llm_config = { provider: 'openai', model: 'gpt-5.1', reasoning_effort: 'low' };
+
+  await updateAssistant('u1', 'ext-1', { assistant_name: 'Renamed' });
+  assert.deepStrictEqual(sent.patch.data, { assistant_name: 'Renamed' });
+  sent.patch = null;
+
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_llm_config: { model: 'gpt-5.1' } }),
+    /removed.*gpt-6-sol/
+  );
+  assert.strictEqual(sent.patch, null);
+
+  await updateAssistant('u1', 'ext-1', { assistant_llm_config: { model: 'gpt-6-sol' } });
+  assert.strictEqual(sent.localUpdate.llm_config.model, 'gpt-6-sol');
+  assert.strictEqual(sent.localUpdate.llm_config.reasoning_effort, 'low');
+});
+
+test('a speaker-only PATCH is judged against the stored Sarvam model', async () => {
+  storedAssistant.tts_model = 'sarvam';
+  storedAssistant.tts_config = { model: 'bulbul:v4-flash', speaker: 'shubh_hi_customer' };
+
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_tts_config: { speaker: 'shubh' } }),
+    /not available on bulbul:v4-flash/
+  );
+  assert.strictEqual(sent.patch, null);
+
+  await updateAssistant('u1', 'ext-1', { assistant_tts_config: { speaker: 'ritu_hi_customer' } });
+  assert.strictEqual(sent.patch.data.assistant_tts_config.speaker, 'ritu_hi_customer');
 });

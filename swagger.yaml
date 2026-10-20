@@ -30,6 +30,9 @@ info:
     - `realtime`: one model (Gemini Live or OpenAI realtime) listens and speaks. TTS/STT fields
       are ignored. Defaults: `provider=gemini`, `model=gemini-3.8-live`, `voice=Puck`.
     - `cascade`: separate STT -> OpenAI chat model -> TTS, each stage metered on its own.
+    - `duplex`: OpenAI GPT-Live (`gpt-live-1`) listens and speaks at once and hands reasoning and
+      tools to a backend model (`assistant_llm_config.backend_model`). TTS/STT fields are
+      ignored. No greeting recording, no filler words, no `text_only` web calls.
 
     Model allowlists, voices, per-provider speech config and language-code traps are documented
     on the schemas they constrain: `AssistantLlmConfig`, `AssistantTtsConfig`,
@@ -207,7 +210,7 @@ paths:
       summary: Create a new voice assistant
       description: |
         Creates a voice assistant both locally in MongoDB and externally via the upstream LiveKit Agents API.
-        Supports runtime modes `pipeline`, `realtime`, and `cascade`.
+        Supports runtime modes `pipeline`, `realtime`, `cascade` and `duplex` (OpenAI GPT-Live).
       requestBody:
         required: true
         content:
@@ -227,16 +230,21 @@ paths:
                   example: "You are a helpful customer support agent..."
                 assistant_mode:
                   type: string
-                  enum: [pipeline, realtime, cascade]
+                  enum: [pipeline, realtime, cascade, duplex]
                   default: pipeline
                   example: "pipeline"
                 assistant_llm_config:
                   allOf:
                     - $ref: '#/components/schemas/AssistantLlmConfig'
-                    - description: Required when mode=realtime, optional in pipeline.
+                    - description: >
+                        Required when mode=realtime, optional in pipeline, cascade and duplex
+                        (duplex defaults to `gpt-live-1` with backend `gpt-5.6-luna`).
                 assistant_tts_model:
                   type: string
-                  description: Required in pipeline mode. Must be sent together with assistant_tts_config.
+                  description: >
+                    Required in `pipeline` and `cascade` mode, and must be sent together with
+                    `assistant_tts_config`. Ignored in `realtime` and `duplex`, where the model
+                    speaks for itself (the create call does not forward it there).
                   enum: [sarvam, cartesia, elevenlabs, mistral]
                   example: "sarvam"
                 assistant_tts_config:
@@ -248,8 +256,8 @@ paths:
                     is pipeline-only and rejected in cascade. The four plugin providers
                     (`cartesia`, `deepgram`, `elevenlabs`, `openai`) run for real in cascade;
                     in pipeline they are stored but that call falls back to native
-                    transcription. `sarvam` runs in both. `realtime` ignores STT fields
-                    because the model transcribes directly.
+                    transcription. `sarvam` runs in both. `realtime` and `duplex` ignore STT
+                    fields because the model transcribes directly.
                   enum: [sarvam, native, cartesia, deepgram, elevenlabs, openai]
                   default: sarvam
                 assistant_stt_config:
@@ -279,6 +287,9 @@ paths:
                   $ref: '#/components/schemas/AssistantEndCallWebhook'
                 assistant_greeting_audio:
                   type: object
+                  description: >
+                    Prerecorded greeting from the audio library. Refused (400) in `duplex` when
+                    `enabled` is true — GPT-Live cannot play a recording.
                   properties:
                     enabled:
                       type: boolean
@@ -323,6 +334,47 @@ paths:
                     provider: gemini
                     model: gemini-3.8-live
                     voice: Puck
+              duplex_gpt_live:
+                summary: Duplex — GPT-Live speaks, a reasoning backend runs the tools (no TTS/STT fields)
+                value:
+                  assistant_name: Support (GPT-Live)
+                  assistant_description: Full-duplex support agent
+                  assistant_prompt: You are a friendly support agent. Keep replies short and delegate order questions.
+                  assistant_mode: duplex
+                  assistant_llm_config:
+                    provider: openai
+                    model: gpt-live-1
+                    voice: cedar
+                    backend_model: gpt-6-luna
+                    backend_instructions: Use the order tools for anything about orders. Answer in one short sentence.
+                    reasoning_effort: low
+              pipeline_elevenlabs_v4:
+                summary: Pipeline — ElevenLabs v4 (reads stability and similarity_boost only)
+                value:
+                  assistant_name: Concierge (ElevenLabs v4)
+                  assistant_description: Pipeline assistant with an ElevenLabs v4 voice
+                  assistant_prompt: You are a friendly concierge.
+                  assistant_mode: pipeline
+                  assistant_tts_model: elevenlabs
+                  assistant_tts_config:
+                    voice_id: JBFqnCBsd6RMkjVDRZzb
+                    model: eleven_v4
+                    voice_settings:
+                      stability: 0.5
+                      similarity_boost: 0.8
+              pipeline_sarvam_v4_flash:
+                summary: Pipeline — Sarvam bulbul:v4-flash (its own speaker roster; no temperature)
+                value:
+                  assistant_name: Support Agent (v4-flash)
+                  assistant_description: Hindi support agent on bulbul:v4-flash
+                  assistant_prompt: You are a polite support agent. Keep answers short.
+                  assistant_mode: pipeline
+                  assistant_tts_model: sarvam
+                  assistant_tts_config:
+                    model: bulbul:v4-flash
+                    speaker: shubh_hi_customer
+                    target_language_code: hi-IN
+                    pace: 1.0
               cascade_deepgram:
                 summary: Cascade — Deepgram STT, OpenAI chat model, Cartesia TTS
                 value:
@@ -374,6 +426,18 @@ paths:
                       llm: 'Try: openai'
                       llm_notes: 'Gemini is not supported in cascade mode - there is no realtime model to transcribe itself'
                       stt_notes: 'Native STT is rejected - there is no realtime model to transcribe itself'
+                retired_model:
+                  summary: 'A retired cascade model — the error names the replacement'
+                  value:
+                    error: "assistant_llm_config.model 'gpt-5.1' was removed — OpenAI retires it on 2027-04-01. Send 'gpt-6-sol' (the replacement LiveKit names) in this request"
+                duplex_greeting_audio:
+                  summary: 'Prerecorded greeting on a duplex assistant'
+                  value:
+                    error: 'assistant_greeting_audio cannot be enabled in duplex mode — GPT-Live cannot play a recording; with speaks_first it greets in its own words'
+                elevenlabs_ignored_setting:
+                  summary: 'An ElevenLabs voice setting the model does not read'
+                  value:
+                    error: 'eleven_v4 does not read voice_settings speed. Remove it, or pick a model that reads it (speed: eleven_turbo_v2_5, eleven_flash_v2_5, eleven_multilingual_v2). eleven_v4 reads: stability, similarity_boost'
               schema:
                 $ref: '#/components/schemas/Error'
         '500':
@@ -595,7 +659,15 @@ paths:
     patch:
       tags: [Assistant]
       summary: Update an assistant
-      description: Updates an assistant locally and on the upstream LiveKit Agents API.
+      description: |
+        Updates an assistant on the upstream LiveKit Agents API, then mirrors the accepted fields
+        locally. Send only what changes; `assistant_llm_config` and `assistant_interaction_config`
+        are merged key by key (a key sent as `null` is removed). Switching into or out of `duplex`,
+        and leaving `realtime`, REPLACES the stored `assistant_llm_config` instead — send the new one
+        in the same request. Rules are re-checked against the merged stored row where a combination
+        is only unrunnable together (for example switching to `duplex` while a greeting recording or
+        `filler_words: true` is stored); a stored value that is merely out of date never blocks an
+        unrelated edit.
       parameters:
         - $ref: '#/components/parameters/Id'
       requestBody:
@@ -613,17 +685,22 @@ paths:
                   type: string
                 assistant_mode:
                   type: string
-                  enum: [pipeline, realtime, cascade]
+                  enum: [pipeline, realtime, cascade, duplex]
                   description: >
-                    Target mode. Only this field (or the presence of TTS/STT fields) switches
-                    mode — sending assistant_llm_config alone does NOT, and leaves the stored
-                    TTS/STT config untouched.
+                    Target mode. Only this field switches mode. Sending `assistant_llm_config`
+                    alone does NOT, and leaves the stored TTS/STT config untouched. A TTS/STT-only
+                    edit on a `pipeline` or `cascade` assistant keeps that mode; on a `realtime`
+                    or `duplex` assistant it also keeps the mode (no `assistant_mode` is sent
+                    upstream) and the speech block is stored but never used.
                 assistant_llm_config:
                   allOf:
                     - $ref: '#/components/schemas/AssistantLlmConfig'
                     - description: >
                         Required only when switching into realtime. Safe to send on its own in
-                        pipeline mode to rotate api_key or pick gemini.
+                        pipeline mode to rotate api_key or pick gemini. Merged key by key with the
+                        stored config, except across a `duplex` switch or when leaving `realtime`,
+                        where it replaces it. A request that names a retired model (`gpt-5.1`,
+                        `gpt-5.4-nano`) is a 400 naming the replacement.
                 assistant_tts_model:
                   type: string
                   enum: [sarvam, cartesia, elevenlabs, mistral]
@@ -665,6 +742,15 @@ paths:
                   $ref: '#/components/schemas/AssistantEndCallWebhook'
                 assistant_greeting_audio:
                   type: object
+                  description: >
+                    Merged with the stored value. Must end up disabled when the assistant is, or
+                    becomes, `duplex`.
+                  properties:
+                    enabled:
+                      type: boolean
+                    audio_id:
+                      type: string
+                      nullable: true
             examples:
               rename:
                 summary: Rename only — nothing else is re-validated or sent
@@ -682,6 +768,26 @@ paths:
                 value:
                   assistant_end_call_webhook:
                     attempts: 3
+              switch_to_duplex:
+                summary: Switch to duplex — the greeting recording and filler words must be off in the same request
+                value:
+                  assistant_mode: duplex
+                  assistant_greeting_audio:
+                    enabled: false
+                  assistant_interaction_config:
+                    filler_words: false
+                  assistant_llm_config:
+                    voice: cedar
+                    backend_model: gpt-6-luna
+              switch_to_cascade_gpt6:
+                summary: Switch to cascade on a gpt-6 model (a reasoning model — reasoning_effort, no temperature)
+                value:
+                  assistant_mode: cascade
+                  assistant_stt_model: sarvam
+                  assistant_llm_config:
+                    provider: openai
+                    model: gpt-6-sol
+                    reasoning_effort: low
       responses:
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -704,7 +810,12 @@ paths:
                       assistant_id:
                         type: string
                   local_data:
-                    $ref: '#/components/schemas/Assistant'
+                    description: >
+                      The local mirror after the update. `llm_config` is the MERGED config (the
+                      stored one with this request applied, `null` keys removed), or `null` after a
+                      switch into or out of `duplex` that sent no new config.
+                    allOf:
+                      - $ref: '#/components/schemas/Assistant'
         '400':
           description: Validation error — `error` plus, when the validator can propose a fix, `suggestions`
           content:
@@ -718,6 +829,22 @@ paths:
                       llm: 'Try: openai'
                       llm_notes: 'Gemini is not supported in cascade mode - there is no realtime model to transcribe itself'
                       stt_notes: 'Native STT is rejected - there is no realtime model to transcribe itself'
+                duplex_stored_greeting:
+                  summary: 'Switching to duplex while a greeting recording is stored'
+                  value:
+                    error: 'assistant_greeting_audio cannot be enabled in duplex mode — GPT-Live cannot play a recording; with speaks_first it greets in its own words'
+                retired_model:
+                  summary: 'Naming a retired cascade model'
+                  value:
+                    error: "assistant_llm_config.model 'gpt-5.4-nano' was removed — OpenAI retires it on 2027-04-01. Send 'gpt-6-luna' (the replacement LiveKit names) in this request"
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No local record for this assistant id (for example one created directly upstream)
+          content:
+            application/json:
+              example:
+                error: 'Assistant not found for this user'
               schema:
                 $ref: '#/components/schemas/Error'
         '500':
@@ -2027,7 +2154,9 @@ paths:
                 text_only:
                   type: boolean
                   default: false
-                  description: Set true for text-only (chat) calls
+                  description: >
+                    Set true for text-only (chat) calls. Refused by upstream (400) for a `duplex`
+                    assistant — GPT-Live has no text modality.
       responses:
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -3007,7 +3136,9 @@ paths:
         Runs the local configuration checks that create applies (mode, provider and model
         compatibility) without creating anything locally or upstream. Always answers `200` —
         read `data.is_valid`. It covers the compatibility matrix only; create/update still run
-        extra field checks (speaker roster, model ids) that can reject a config this passes.
+        extra field checks (speaker roster, model ids, ElevenLabs settings, Sarvam limits, retired
+        models) that can reject a config this passes. It does cover the duplex rules (model, voice,
+        backend model, no greeting recording, no filler words) that need only the draft.
       requestBody:
         required: true
         content:
@@ -3210,7 +3341,7 @@ paths:
       summary: List the builder wizard's steps (builder helper)
       description: >
         The ordered steps for a step-by-step assistant builder UI. Steps that do not apply to
-        the draft's mode are left out (`tts` and `stt` disappear for `realtime`). Local only.
+        the draft's mode are left out (`tts` and `stt` disappear for `realtime` and `duplex`). Local only.
       parameters:
         - $ref: '#/components/parameters/WizardConfig'
       responses:
@@ -3643,7 +3774,7 @@ components:
           type: string
         assistant_mode:
           type: string
-          enum: [pipeline, realtime, cascade]
+          enum: [pipeline, realtime, cascade, duplex]
         assistant_tts_model:
           type: string
           nullable: true
@@ -3679,7 +3810,7 @@ components:
           type: string
         assistant_mode:
           type: string
-          enum: [pipeline, realtime, cascade]
+          enum: [pipeline, realtime, cascade, duplex]
         assistant_llm_config:
           type: object
           nullable: true
@@ -3801,11 +3932,12 @@ components:
           example: "You are a helpful customer support agent..."
         llm_mode:
           type: string
-          enum: [pipeline, realtime, cascade]
+          enum: [pipeline, realtime, cascade, duplex]
           example: "pipeline"
           description: >
             Runtime mode. Mirrors `assistant_mode` on the external API. `cascade` is the true
-            STT → LLM → TTS pipeline (openai LLM only, plugin STT + TTS).
+            STT → LLM → TTS pipeline (openai LLM only, plugin STT + TTS). `duplex` is OpenAI
+            GPT-Live plus a backend reasoning model.
         llm_provider:
           type: string
           enum: [openai, gemini]
@@ -3814,6 +3946,9 @@ components:
         llm_config:
           type: object
           nullable: true
+          description: >
+            Mirror of `assistant_llm_config` as sent on create, merged key by key on every update.
+            `null` after a switch into or out of `duplex` that sent no new config.
         tts_model:
           type: string
           nullable: true
@@ -3836,6 +3971,7 @@ components:
         greeting_audio:
           type: object
           nullable: true
+          description: Must be disabled (or absent) when `llm_mode` is `duplex`.
         end_call_enabled:
           type: boolean
           example: false
@@ -3878,13 +4014,14 @@ components:
         speaks_first:
           type: boolean
           default: true
-          description: Assistant sends the opening response first. Works in both modes.
+          description: Assistant sends the opening response first. Works in every mode; in `duplex` GPT-Live phrases the greeting itself and may decline, in which case the caller speaks first.
         filler_words:
           type: boolean
           default: false
           description: >
-            Filler words while the user speaks. Pipeline mode only — forced to false in
-            realtime, which has no external TTS.
+            Filler words while the user speaks. Needs an external TTS: `pipeline` and `cascade`
+            only. Forced to false in `realtime`; `true` is a 400 in `duplex`, where GPT-Live
+            cannot speak a scripted filler.
         silence_reprompts:
           type: boolean
           default: false
@@ -3938,24 +4075,41 @@ components:
 
     AssistantLlmConfig:
       type: object
+      # One sendable example. Without it the /mcp example generator blends every mode's knobs
+      # (gemini provider + cascade temperature + duplex backend_model), which no mode accepts.
+      example:
+        provider: openai
+        model: gpt-6-luna
+        reasoning_effort: low
+        max_output_tokens: 500
       description: >
         LLM vendor config. Optional in pipeline mode (defaults to `openai`; only `api_key` and
         `model` affect runtime behavior there) and required when switching into realtime. Any
         `api_key` sent here is replaced with the key stored in the Integrations module; in
         pipeline mode a missing integration is not an error — the external API's system key is
         used. In `cascade` mode `provider` must be `openai`, `model` is checked against the
-        cascade allowlist, and `voice` is ignored.
+        cascade allowlist, and `voice` is ignored. In `duplex` mode (OpenAI GPT-Live) `provider`
+        must be `openai`, `model` is always `gpt-live-1`, and the reasoning model goes in
+        `backend_model`.
 
         The seven generation knobs (`temperature` through `parallel_tool_calls`) are accepted
-        and stored in every mode but only READ in `cascade` — they are `openai.responses.LLM`
-        parameters, and pipeline/realtime talk to the Realtime API instead.
+        and stored in every mode but only READ in `cascade` and `duplex` — they are
+        `openai.responses.LLM` parameters (in duplex, the backend model's), and pipeline/realtime
+        talk to the Realtime API instead. In duplex they are checked against `backend_model`, and
+        `temperature` is rejected because every backend model is a reasoning model.
+
+        A switch into or out of `duplex` replaces the stored `assistant_llm_config` instead of
+        merging it, because no model id is valid in both; send the new config in the same
+        request. Leaving `realtime` does the same. Duplex also refuses an enabled
+        `assistant_greeting_audio` and `assistant_interaction_config.filler_words: true` (400),
+        and `text_only` web calls — GPT-Live cannot speak a fixed string.
       properties:
         provider:
           type: string
           enum: [openai, gemini]
           description: >
-            `openai` or `gemini` in realtime; `openai` ONLY in pipeline and cascade. `gemini`
-            in pipeline mode is rejected with 400 — Google's Live API cannot run the text-only
+            `openai` or `gemini` in realtime; `openai` ONLY in pipeline, cascade and duplex.
+            `gemini` in pipeline mode is rejected with 400 — Google's Live API cannot run the text-only
             modality a half-cascade needs. Use `assistant_mode: realtime` for Gemini.
           example: "gemini"
         model:
@@ -3963,16 +4117,21 @@ components:
           description: >
             Validated per mode against a different list, because each mode talks to a different
             API. Pipeline and realtime+openai: `gpt-realtime`, `gpt-realtime-1.5`,
-            `gpt-realtime-2`, `gpt-realtime-2025-08-28`, `gpt-realtime-mini`
-            (default `gpt-realtime-1.5`). Realtime+gemini: `gemini-3.8-live`,
+            `gpt-realtime-2`, `gpt-realtime-2.1`, `gpt-realtime-2.1-mini`,
+            `gpt-realtime-2025-08-28`, `gpt-realtime-mini` (default `gpt-realtime-1.5`). Realtime+gemini: `gemini-3.8-live`,
             `gemini-3.8-live-extended-thinking`, `gemini-3.1-flash-live-preview`,
             `gemini-2.5-flash-native-audio-preview-12-2025`
             (upstream default `gemini-3.8-live`; the starter template pins `gemini-3.8-live`).
             `gemini-live-2.5-flash-native-audio` is the Vertex AI id and is rejected with a `422`.
             Cascade (default `gpt-4.1`):
             `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-4o`, `gpt-4o-mini`, `gpt-5`,
-            `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`,
-            `gpt-5.4-nano`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`.
+            `gpt-5-mini`, `gpt-5-nano`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`,
+            `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-luna`, `gpt-6-sol` (the gpt-6
+            models accept `reasoning_effort` `none` to `xhigh` but not `minimal`, take `verbosity`
+            and `flex`, and reject `temperature`). `gpt-5.1` and `gpt-5.4-nano` were removed
+            (OpenAI retires them on 2027-04-01): a request naming one is a 400 that names the
+            replacement (`gpt-6-sol`, `gpt-6-luna`), but an assistant that already stores one
+            still runs and can still be renamed or otherwise edited. Duplex: `gpt-live-1` only.
             The two sets are disjoint — sending one family's ID in the other's mode is a 400.
             Rejected on purpose: the retired preview pair `gpt-4o-realtime-preview` /
             `gpt-4o-mini-realtime-preview` (a session that can never connect); a non-Live Gemini
@@ -3983,7 +4142,9 @@ components:
         voice:
           type: string
           description: >
-            Realtime only (ignored in pipeline and cascade — the TTS provider owns the voice).
+            Realtime and duplex only (ignored in pipeline and cascade — the TTS provider owns the
+            voice). Duplex (GPT-Live), default `marin`: `beacon`, `cedar`, `cinder`, `marin`,
+            `stone`, `vesper`; fixed for the whole call.
             Gemini default `Puck` — closed roster of 30 names: `Zephyr`, `Puck`, `Charon`, `Kore`,
             `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`, `Autonoe`, `Enceladus`, `Iapetus`,
             `Umbriel`, `Algieba`, `Despina`, `Erinome`, `Algenib`, `Rasalgethi`, `Laomedeia`,
@@ -3999,8 +4160,9 @@ components:
           minimum: 0
           maximum: 2
           description: >
-            Cascade only. Sampling temperature, 0-2 (SDK default 0.8). Higher = more random.
-            IGNORED by reasoning models (`gpt-5`, `gpt-5.x`) — send `reasoning_effort` there.
+            Cascade only (rejected in duplex). Sampling temperature, 0-2 (SDK default 0.8). Higher
+            = more random. IGNORED by reasoning models (`gpt-5`, `gpt-5.x`, `gpt-6-*`) — send
+            `reasoning_effort` there.
           example: 0.7
         max_output_tokens:
           type: integer
@@ -4011,7 +4173,8 @@ components:
           type: string
           enum: [none, minimal, low, medium, high, xhigh, max]
           description: >
-            Cascade only, and only on REASONING models (`gpt-5`, `gpt-5.x`). How much the model
+            Cascade and duplex (backend model), and only on REASONING models (`gpt-5`, `gpt-5.x`,
+            `gpt-6-*`; `minimal` is not accepted on gpt-6). How much the model
             thinks before answering. Higher = slower and dearer; on a voice call that is
             audible latency, so prefer `low`/`minimal` unless the task needs the depth.
           example: "low"
@@ -4019,8 +4182,8 @@ components:
           type: string
           enum: [auto, default, fast, flex, priority]
           description: >
-            Cascade only. OpenAI processing/billing tier. `flex` is only available on the
-            gpt-5 generation. Unset = OpenAI's default.
+            Cascade and duplex. OpenAI processing/billing tier. `flex` is only available on the
+            gpt-5 generation and gpt-6. Unset = OpenAI's default.
         verbosity:
           type: string
           enum: [low, medium, high]
@@ -4038,6 +4201,20 @@ components:
         parallel_tool_calls:
           type: boolean
           description: Cascade only. Allow more than one tool call in a single response.
+        backend_model:
+          type: string
+          description: >
+            Duplex only (rejected elsewhere upstream). The reasoning model GPT-Live hands
+            reasoning and tool calls to. Default `gpt-5.6-luna`. Any current reasoning model from
+            the cascade list (`gpt-5*`, `gpt-6-luna`, `gpt-6-sol`); the retired `gpt-5.1` and
+            `gpt-5.4-nano` are refused. The generation knobs are checked against this model.
+          example: "gpt-6-luna"
+        backend_instructions:
+          type: string
+          maxLength: 4000
+          description: >
+            Duplex only. Instructions for the backend model — `assistant_prompt` is the voice
+            persona, this tells the backend how to handle delegated work. Fixed for the call.
 
     # One schema per TTS provider. Upstream picks the block by the SIBLING field
     # `assistant_tts_model`, so an OpenAPI discriminator (which must live inside the object) is
@@ -4052,8 +4229,9 @@ components:
         rejected with 422 rather than silently dropped. Any `api_key` sent here is ignored — the
         key always comes from the Integrations module (`POST /api/integration/store`).
 
-        The synthesis model is fixed per provider except ElevenLabs: cartesia `sonic-3`, sarvam
-        `bulbul:v3`, mistral `voxtral-mini-tts-2603`. Speaking speed is per-provider and NOT
+        The synthesis model is fixed per provider except ElevenLabs and Sarvam: cartesia `sonic-3`, sarvam
+        `bulbul:v3` by default (`assistant_tts_config.model` also takes `bulbul:v4-flash`),
+        mistral `voxtral-mini-tts-2603`. Speaking speed is per-provider and NOT
         interchangeable: cartesia `speed`, sarvam `pace`, elevenlabs `voice_settings.speed`.
         Mistral exposes no rate knob.
       anyOf:
@@ -4064,50 +4242,69 @@ components:
 
     SarvamTtsConfig:
       type: object
-      title: sarvam (bulbul:v3)
+      title: sarvam (bulbul:v3, bulbul:v4-flash)
       additionalProperties: false
       required: [speaker]
       properties:
+        model:
+          type: string
+          enum: [bulbul:v3, bulbul:v4-flash]
+          default: bulbul:v3
+          description: >
+            `bulbul:v4-flash` is faster and cheaper, with its own speaker roster and tighter
+            limits (below). A speaker, pace, sample rate or temperature is judged against the
+            model stored on the assistant when a PATCH does not send `model`.
         speaker:
           type: string
           description: >
-            Required. One of the 30 `bulbul:v3` speakers: `aayan`, `aditya`, `advait`, `amelia`,
-            `amit`, `ashutosh`, `dev`, `ishita`, `kabir`, `kavitha`, `kavya`, `manan`, `neha`,
-            `pooja`, `priya`, `rahul`, `ratan`, `ritu`, `rohan`, `roopa`, `rupali`, `shreya`,
-            `shruti`, `shubh`, `simran`, `sophia`, `suhani`, `sumit`, `tanya`, `varun`. The v2
-            names (`anushka`, `manisha`, `vidya`, ...) are rejected — v2 and v3 share none.
-          enum: [aayan, aditya, advait, amelia, amit, ashutosh, dev, ishita, kabir, kavitha, kavya, manan, neha, pooja, priya, rahul, ratan, ritu, rohan, roopa, rupali, shreya, shruti, shubh, simran, sophia, suhani, sumit, tanya, varun]
+            Required. A speaker from the chosen model's roster; the two rosters share no names.
+            `bulbul:v3` (30): `aayan`, `aditya`, `advait`, `amelia`, `amit`, `ashutosh`, `dev`,
+            `ishita`, `kabir`, `kavitha`, `kavya`, `manan`, `neha`, `pooja`, `priya`, `rahul`,
+            `ratan`, `ritu`, `rohan`, `roopa`, `rupali`, `shreya`, `shruti`, `shubh`, `simran`,
+            `sophia`, `suhani`, `sumit`, `tanya`, `varun`. `bulbul:v4-flash` (224): names carry
+            the language and style, `<voice>_<language>_<style>`, such as `shubh_hi_customer` or
+            `simran_enhi_customer`; the full list is in the api-livekit-docs "Models & Providers"
+            page and in `src/assistant/tts-rules.js`. The v2 names (`anushka`, `manisha`, ...) are
+            rejected on both. A wrong speaker is a 400 here; it is never substituted upstream — the
+            call would end before it starts.
           example: "shubh"
         target_language_code:
           type: string
-          enum: [bn-IN, en-IN, gu-IN, hi-IN, kn-IN, ml-IN, mr-IN, od-IN, pa-IN, ta-IN, te-IN]
+          enum: [bn-IN, en-IN, gu-IN, hi-IN, kn-IN, ml-IN, mr-IN, od-IN, pa-IN, ta-IN, te-IN, as-IN, brx-IN, doi-IN, kok-IN, ks-IN, mai-IN, mni-IN, ne-IN, sa-IN, sat-IN, sd-IN, ur-IN]
           description: >
-            A SINGLE BCP-47 string, not a list. Bulbul speaks these 11 codes and nothing else —
-            note `en-IN`, NOT `en-US`, which looks reasonable and is rejected. Omit and the
-            platform substitutes `en-IN`. NOTE: assistants created before this default was
-            corrected have `bn-IN` written into their stored config — send the field explicitly
-            to fix them.
+            A SINGLE BCP-47 string, not a list. Every Bulbul model speaks the first 11 codes
+            (`bn-IN` to `te-IN`) — note `en-IN`, NOT `en-US`, which looks reasonable and is
+            rejected. `bulbul:v4-flash` also speaks the 12 IN22 codes (`as-IN`, `brx-IN`, `doi-IN`,
+            `kok-IN`, `ks-IN`, `mai-IN`, `mni-IN`, `ne-IN`, `sa-IN`, `sat-IN`, `sd-IN`, `ur-IN`),
+            but only on a Sarvam subscription that has them enabled — that part is not checked
+            here. On `bulbul:v3` an IN22 code is a 400. Omit and the platform substitutes `en-IN`.
+            NOTE: assistants created before this default was corrected have `bn-IN` written into
+            their stored config — send the field explicitly to fix them.
           example: "hi-IN"
         pace:
           type: number
           minimum: 0.3
           maximum: 3.0
           default: 1.0
-          description: Speaking pace multiplier; >1.0 faster, <1.0 slower.
+          description: >
+            Speaking pace multiplier; >1.0 faster, <1.0 slower. `0.3`-`3.0` on `bulbul:v3`,
+            `0.5`-`2.0` on `bulbul:v4-flash`.
           example: 1.1
         speech_sample_rate:
           type: number
           enum: [8000, 16000, 22050, 24000, 32000, 44100, 48000]
           default: 24000
           description: >
-            Output sample rate in Hz — any other value is rejected. Use `8000` only for
-            narrowband telephony.
+            Output sample rate in Hz — any other value is rejected. `bulbul:v4-flash` takes only
+            `8000`, `16000`, `22050` and `24000`. Use `8000` only for narrowband telephony.
         temperature:
           type: number
           minimum: 0.01
           maximum: 2.0
           default: 0.3
-          description: TTS sampling temperature. Lower = more stable delivery.
+          description: >
+            TTS sampling temperature. Lower = more stable delivery. `bulbul:v3` only — rejected
+            (400) on `bulbul:v4-flash`, where Sarvam fixes it at `0.6`.
 
     CartesiaTtsConfig:
       type: object
@@ -4161,16 +4358,25 @@ components:
           example: "JBFqnCBsd6RMkjVDRZzb"
         model:
           type: string
-          enum: [eleven_v3, eleven_v3_conversational, eleven_multilingual_v2, eleven_turbo_v2_5, eleven_flash_v2_5]
+          enum: [eleven_v3, eleven_v3_conversational, eleven_v4, eleven_v4_turbo, eleven_multilingual_v2, eleven_turbo_v2_5, eleven_flash_v2_5]
           default: eleven_v3
           description: >
-            The one provider whose synthesis model is selectable; the other three reject a
-            `model` key. Neither v3 model reads `voice_settings.speed`; only
-            `eleven_multilingual_v2`, `eleven_turbo_v2_5` and `eleven_flash_v2_5` do.
+            Selectable (with Sarvam); cartesia and mistral reject a `model` key.
+            `eleven_monolingual_v1` and `eleven_multilingual_v1` are rejected — ElevenLabs
+            retired them. Which `voice_settings` a model reads is in `voice_settings` below.
         voice_settings:
           type: object
           additionalProperties: false
-          description: Voice tuning. Strict, like its parent — an unknown key here is a 422 too.
+          description: >
+            Voice tuning. Strict, like its parent — an unknown key here is a 422 too. Most models
+            read only some settings, and a setting the model ignores is a 400 here (a 422
+            upstream), naming the models that do read it: `eleven_v3` (default) reads
+            `stability`; `eleven_v3_conversational` adds `use_speaker_boost`; `eleven_v4` and
+            `eleven_v4_turbo` read `stability` and `similarity_boost`; `eleven_turbo_v2_5` and
+            `eleven_flash_v2_5` read all but `style` and `use_speaker_boost`; only
+            `eleven_multilingual_v2` reads all five. A PATCH that sends only `voice_settings` is
+            judged against the stored model. On the v3 models `stability` reads as three modes:
+            `0.0` creative, `0.5` natural, `1.0` robust.
           properties:
             stability:
               type: number
