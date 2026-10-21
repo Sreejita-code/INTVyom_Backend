@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Audit: 1.7.0 duplex call-log recheck</title>
+<style>
+body{font:15px/1.5 system-ui,sans-serif;max-width:980px;margin:2rem auto;padding:0 1rem;color:#1b1f24}
+h1{font-size:1.5rem}h2{margin-top:2rem;border-bottom:1px solid #d0d7de;padding-bottom:.2rem}
+table{border-collapse:collapse;width:100%;margin:.5rem 0}th,td{border:1px solid #d0d7de;padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:#f6f8fa}code{background:#f6f8fa;padding:0 .25rem;border-radius:3px}
+.tiles{display:flex;gap:.75rem;flex-wrap:wrap}.tile{border:1px solid #d0d7de;border-radius:6px;padding:.6rem 1rem;min-width:90px}
+.tile b{display:block;font-size:1.5rem}.med{border-left:6px solid #d29922}.low{border-left:6px solid #2da44e}.info{border-left:6px solid #0969da}
+.card{border:1px solid #d0d7de;border-radius:6px;padding:.7rem 1rem;margin:.8rem 0}
+.ok{background:#dafbe1}.gap{background:#fff1c2}.bad{color:#cf222e}
+.box{border:1px solid #d0d7de;border-radius:6px;padding:.5rem .8rem;display:inline-block;background:#f6f8fa}
+</style></head><body>
+<h1>Audit: upstream 1.7.0 duplex call-log / usage recheck</h1>
+<p>Task <code>2026-10-21-audit-1-7-0-duplex-call-log-recheck</code> · report only · standard depth · upstream = <code>api-livekit-docs</code> MCP, changelog 1.7.0 (2026-10-21).</p>
+
+<h2>Summary</h2>
+<p><b>Verdict: no code change needed. Three documentation fixes needed.</b> The proxy forwards call logs, usage and analytics unchanged and reads only three unrelated fields. The drift is in docs: one invented set of field names, and missing description of what upstream actually changed.</p>
+<div class="tiles"><div class="tile">High<b>0</b></div><div class="tile">Medium<b>1</b></div><div class="tile">Low<b>2</b></div><div class="tile">Info<b>1</b></div></div>
+<p>Fix first: (1) D-1 remove the four field names upstream does not document; (2) D-2 document <code>voice_llm_usage</code> / <code>backend_llm_usage</code> and per-entry cost; (3) D-3 complete the <code>call_end_reason</code> list.</p>
+
+<h2>Scope and method</h2>
+<p>In: call-log, usage, analytics and end-call-webhook passthrough in <code>src/</code>, <code>swagger.yaml</code>, <code>docs/</code>, <code>tests/</code>. Out: SIP/trunks, auth, infra, the Gemini work already shipped. Method: read upstream <code>changelog.md</code>, <code>api/assistant/logs.md</code>, <code>reference/usage-accounting.md</code>, <code>api/analytics/tokens-by-model.md</code>, <code>api/calls/webhook.md</code>, <code>api/calls/usage.md</code>; searched upstream for the claimed field names; read the local code and docs; ran the test suite.</p>
+
+<h2>Automated results (before any change)</h2>
+<table><tr><th>Check</th><th>Result</th></tr>
+<tr><td><code>npm test</code></td><td>186 tests, 186 pass, 0 fail</td></tr>
+<tr><td><code>yamljs</code> load of <code>swagger.yaml</code></td><td>loads</td></tr>
+<tr><td>Lint, types, complexity, <code>npm audit</code></td><td>not run: no change to code in scope; this audit finds no code defect</td></tr></table>
+
+<h2>Changelog items: match or gap</h2>
+<table>
+<tr><th>1.7.0 item</th><th>Local evidence</th><th>Status</th></tr>
+<tr class="ok"><td>Duplex <code>model_usage</code> types <code>voice_llm_usage</code> / <code>backend_llm_usage</code></td><td>Call logs forwarded verbatim: <code>src/assistant/assistant.billing.js:103-109</code>. No code branches on <code>model_usage[].type</code> (grep over <code>src/</code> finds none). Analytics routes proxy only dashboard, by-assistant, by-phone-number, by-time, by-service: <code>src/api/routes/analytics.routes.js:18-24</code>; no <code>/analytics/tokens/*</code>, no <code>/call/records/*/usage</code>.</td><td>Code: match. Docs: gap (D-2)</td></tr>
+<tr class="ok"><td>Duplex cost split per model, <code>Cost by model</code> worker log line</td><td>Worker-side; proxy not involved.</td><td>Match (no action)</td></tr>
+<tr class="gap"><td>Service tiers priced (<code>flex</code> x0.5, <code>fast</code>/<code>priority</code> x2); <code>pricing_schema_version</code> 2</td><td>Proxy already forwards <code>service_tier</code>; usage forwarded verbatim. Docs describe tiers: <code>docs/ASSISTANT-RULES.md:241-243</code>. <code>pricing_schema_version</code> not mentioned anywhere locally.</td><td>Code: match. Docs: gap (D-2)</td></tr>
+<tr class="ok"><td>Gemini realtime refuses five knobs</td><td>Shipped earlier today (see 1.7.0 sync report).</td><td>Match</td></tr>
+<tr class="ok"><td>Billable-minute aggregation</td><td>Reads only <code>billable_duration_minutes</code>, <code>to_number</code>, <code>platform_number</code>: <code>assistant.billing.js:124,172</code>. Unchanged upstream.</td><td>Match</td></tr>
+</table>
+<p><b>Stored-data impact: none.</b> The proxy stores no usage rows locally; old duplex rows upstream keep <code>llm_usage</code> and need nothing from us.</p>
+
+<h2>Findings</h2>
+
+<div class="card med"><b>D-1 | Medium | Docs state fields upstream does not define (hallucinated API)</b><br>
+<code>swagger.yaml:3758-3760</code>, <code>docs/ASSISTANT-RULES.md:239-243</code>, <code>docs/CHANGELOG.md:14-15</code><br>
+All three say duplex <code>usage</code> carries <code>voice_model</code>, <code>backend_model</code>, <code>estimated_cost_voice_usd</code>, <code>estimated_cost_backend_usd</code>. A search of upstream's usage, webhook, call-logs and analytics pages finds none of these keys. Upstream documents the split inside <code>model_usage</code>, with a cost on each entry.<br>
+<b>Why it matters:</b> a client developer who reads our contract will code against keys that never arrive, and will miss the real ones. The README rules say never to guess an upstream field name.<br>
+<b>Fix:</b> replace the sentence with the real shape (see patch below). Whether the names came from an earlier upstream revision or were invented cannot be told from the repo; upstream as it reads now is the authority.</div>
+
+<div class="card low"><b>D-2 | Low | The actual 1.7.0 call-log change is not documented</b><br>
+<code>swagger.yaml:3745-3760</code> (<code>usage</code> description), <code>swagger.yaml:957-971</code> (call-log example has no <code>model_usage</code> or pricing fields), <code>docs/ASSISTANT-RULES.md:237-243</code><br>
+Missing: <code>model_usage[].type</code> is <code>voice_llm_usage</code> / <code>backend_llm_usage</code> on new duplex calls and <code>llm_usage</code> on calls recorded before 1.7.0; each entry has its own <code>estimated_cost_usd</code>; <code>llm_model</code> is comma-separated for duplex; <code>pricing_schema_version</code> is <code>2</code> from 1.7.0.<br>
+<b>Why it matters:</b> upstream flags that a receiver matching <code>type == "llm_usage"</code> must accept the new names. Our consumers read our docs, not upstream's.<br>
+<b>Fix:</b> add the trap to the swagger description and to the webhook section of <code>ASSISTANT-RULES.md</code>, add a duplex <code>model_usage</code> example, and add one <code>docs/CHANGELOG.md</code> line.</div>
+
+<div class="card low"><b>D-3 | Low | <code>call_end_reason</code> list is incomplete</b><br>
+<code>swagger.yaml:4667</code>, <code>docs/ASSISTANT-RULES.md:236</code><br>
+We list <code>natural</code> and <code>max_duration_exceeded</code>. Upstream's webhook page lists four: also <code>end_call_tool</code> and <code>silence_timeout</code>. Found while reading the webhook page; not a 1.7.0 change.<br>
+<b>Why it matters:</b> a strict client enum built from our docs rejects a real value.<br>
+<b>Fix:</b> list all four, say the field may be <code>null</code> on legacy records.</div>
+
+<div class="card info"><b>D-4 | Info | Structure conformance</b><br>
+Handlers delegate, forwarding goes through <code>callExternal</code>, no <code>axios</code> or <code>process.env</code> outside their layers in the files read. No violation.</div>
+
+<h2>Proposed doc patch (not applied)</h2>
+<p><code>swagger.yaml</code> <code>usage</code> description, replace the duplex sentence with:</p>
+<pre>duplex calls (upstream 1.7.0) have two `model_usage` entries, typed `voice_llm_usage`
+(GPT-Live, billed per session second) and `backend_llm_usage` (backend model, billed per
+token), each with its own `estimated_cost_usd`; the call's `estimated_cost_usd` is their sum.
+`llm_model` lists both, comma-separated. Calls recorded before 1.7.0 keep `llm_usage` on both
+entries, so a receiver matching `type == "llm_usage"` must also accept the new names.
+`pricing_schema_version` is 2 from 1.7.0 (service tiers priced). Forwarded unchanged:
+accept unknown keys.</pre>
+<p>Same text, shortened, in <code>docs/ASSISTANT-RULES.md</code> lines 239-243. <code>docs/CHANGELOG.md</code> lines 14-15: correct the four field names to the <code>model_usage</code> shape.</p>
+
+<h2>Recommended follow-up</h2>
+<table><tr><th>Task</th><th>Scope</th></tr>
+<tr><td>core-be-build-feature (docs only)</td><td>Apply the patch above to <code>swagger.yaml</code>, <code>docs/ASSISTANT-RULES.md</code>, <code>docs/CHANGELOG.md</code>; fix D-3; add a duplex <code>model_usage</code> example; run <code>npm test</code> and the yamljs load.</td></tr></table>
+
+<h2>Not reviewed</h2>
+<p>SIP/trunks, auth, inbound-context, meeting calls, the non-duplex model rules, and the rest of <code>swagger.yaml</code> beyond the call-log and webhook schemas. No live upstream call was made; all upstream facts come from the MCP docs.</p>
+
+<h2>Trace</h2>
+<p>agent-tracking/plans/2026-10-21-audit-1-7-0-duplex-call-log-recheck/{scope,plan,progress}.md · agent-tracking/research/2026-10-21-audit-1-7-0-duplex-call-log-recheck.md</p>
+</body></html>

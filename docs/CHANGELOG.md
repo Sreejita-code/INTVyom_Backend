@@ -11,8 +11,13 @@ has the detail. Add a line here with every contract change.
   `temperature` and `max_output_tokens` reach Gemini Live. Before, they were stored and ignored.
   A stored Gemini row holding one is refused on its next LLM-config edit until the field is sent as
   `null`. OpenAI realtime/pipeline unchanged.
-- Docs: duplex `usage` cost split (`voice_model`, `backend_model`, `estimated_cost_voice_usd`,
-  `estimated_cost_backend_usd`) and priced service tiers are upstream-only; the proxy forwards them.
+- Docs: duplex `usage` cost split lives in `model_usage` (`voice_llm_usage` and `backend_llm_usage`
+  entries, each with `estimated_cost_usd`; pre-1.7.0 rows keep `llm_usage`) and service tiers are
+  priced (`pricing_schema_version` `2`). Upstream-only; the proxy forwards them. An earlier version
+  of this line named `voice_model`, `backend_model`, `estimated_cost_voice_usd` and
+  `estimated_cost_backend_usd`; those keys do not exist.
+- Docs: `call_end_reason` lists `natural`, `end_call_tool`, `silence_timeout` and
+  `max_duration_exceeded`; the old two-value list was incomplete.
 
 ## 2026-10-20 — Duplex mode, model refresh, docs split
 

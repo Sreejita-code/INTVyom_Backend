@@ -233,14 +233,21 @@ idempotent (key on `data.room_name`, or `data.queue_id` for outbound).
 
 - `data.queue_id` correlates with the `POST /call/outbound` response (outbound only; `null`
   for inbound/web).
-- `data.call_end_reason`: `natural` | `max_duration_exceeded` (may be `null` on legacy records).
+- `data.call_end_reason`: `natural` | `end_call_tool` | `silence_timeout` | `max_duration_exceeded`
+  (may be `null` on legacy records).
 - `data.usage.mode`: `pipeline` | `realtime` | `cascade` | `duplex`. **Breaking:** the old
   `usage.llm_mode` key is no longer emitted — read `usage.mode`.
-- Duplex calls (upstream 1.7.0) also carry `data.usage.voice_model`, `backend_model`,
-  `estimated_cost_voice_usd` and `estimated_cost_backend_usd`: the GPT-Live session
-  ($0.05/min) and the backend tokens priced apart. Service tiers are priced: `flex` is half and
-  `fast`/`priority` double the standard token rate, so a non-default tier no longer leaves a call
-  unpriced. The proxy forwards `usage` unchanged; strict clients must accept the new keys.
+- Duplex calls (upstream 1.7.0) have two `data.usage.model_usage` entries, typed
+  `voice_llm_usage` (GPT-Live session, $0.05/min) and `backend_llm_usage` (backend tokens), each
+  with its own `estimated_cost_usd`; the call total is their sum and `usage.llm_model` lists both,
+  comma-separated. **Trap:** calls recorded before 1.7.0 keep `llm_usage` on both entries, so a
+  receiver that matches `type == "llm_usage"` must accept the new names too. No `voice_model`,
+  `backend_model` or per-part cost keys exist on `usage`; read `model_usage`.
+- Service tiers are priced from 1.7.0 (`usage.pricing_schema_version` `2`): `flex` is half and
+  `fast`/`priority` double the standard token rate, token-billed models only; in duplex the tier
+  scales the backend, never the GPT-Live voice entry. Before, a non-default tier left the call
+  unpriced (`pricing_schema_version` `1`). The proxy forwards `usage` unchanged; strict clients
+  must accept unknown keys.
 - `data.usage.stt_provider` / `stt_model` / `stt_audio_duration` are populated **only** in
   `cascade` mode; `null`/`0` otherwise (the LLM transcribes internally).
 - `data.billable_duration_minutes`: rounded up for connected calls, `0` for non-connected

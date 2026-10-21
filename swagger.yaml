@@ -966,7 +966,16 @@ paths:
                             stt_provider: deepgram
                             stt_model: nova-3
                             stt_audio_duration: 300
+                            model_usage:
+                              -
+                                type: llm_usage
+                                provider: openai
+                                model: gpt-4.1
+                                input_tokens: 1500
+                                output_tokens: 300
+                                estimated_cost_usd: '0.0120'
                             estimated_cost_usd: '0.0234'
+                            pricing_schema_version: 2
                             pricing_complete: true
                             usage_finalized: true
                       pagination:
@@ -3754,10 +3763,18 @@ components:
             Usage and estimated AI-provider cost; `null` when no usage row exists (e.g. the call
             failed before the agent session started). Mid-call values are a snapshot —
             `usage_finalized: true` marks the final totals. `estimated_cost_usd` is a decimal
-            **string** and an estimate. `mode` is `pipeline`, `realtime`, `cascade` or `duplex`;
-            duplex calls (upstream 1.7.0) also carry `voice_model`, `backend_model`,
-            `estimated_cost_voice_usd` and `estimated_cost_backend_usd` (GPT-Live session and
-            backend tokens priced apart). Forwarded unchanged: accept unknown keys.
+            **string** and an estimate. `mode` is `pipeline`, `realtime`, `cascade` or `duplex`.
+
+            A duplex call (upstream 1.7.0) has two `model_usage` entries, typed `voice_llm_usage`
+            (GPT-Live, billed per session second) and `backend_llm_usage` (the backend model,
+            billed per token), each with its own `estimated_cost_usd`; the call's
+            `estimated_cost_usd` is their sum and `llm_model` lists both, comma-separated. Calls
+            recorded before 1.7.0 keep `llm_usage` on both entries, so a receiver that matches
+            `type == "llm_usage"` must also accept the two new names. `pricing_schema_version` is
+            `2` from 1.7.0, which prices service tiers (`flex` x0.5, `fast`/`priority` x2, token-billed
+            models only); `1` rows left a non-default tier unpriced.
+
+            Forwarded unchanged: accept unknown keys.
 
     Pagination:
       type: object
@@ -4666,7 +4683,8 @@ components:
         `assistant_end_call_webhook`.
 
         Key fields: `queue_id` correlates with the `POST /api/call/outbound` response (outbound
-        calls only); `call_end_reason` is `natural` or `max_duration_exceeded`;
+        calls only); `call_end_reason` is `natural`, `end_call_tool`, `silence_timeout` or
+        `max_duration_exceeded` (`null` on legacy records);
         `billable_duration_minutes` is rounded up for connected calls and `0` otherwise;
         `usage.stt_*` is populated ONLY in `cascade` mode. Passthrough webhooks carry
         `assistant_id`/`assistant_name` as `null`, `transcripts` as `[]`, and no `usage`.
