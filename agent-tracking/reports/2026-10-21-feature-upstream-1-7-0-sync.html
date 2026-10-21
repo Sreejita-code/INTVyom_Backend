@@ -1,0 +1,46 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Upstream 1.7.0 sync</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
+h1,h2{margin-top:1.6em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top}
+th{background:#f3f3f3}.g{background:#e6f4ea}.r{background:#fce8e6}.y{background:#fef7e0}.box{display:inline-block;padding:8px 12px;border:1px solid #888;border-radius:6px;margin:4px}
+code{background:#f3f3f3;padding:1px 4px;border-radius:3px}</style></head><body>
+<h1>Upstream 1.7.0 sync</h1>
+<p>Asked: is anything needed here after the <code>api-livekit-docs</code> 1.7.0 changelog (Gemini setting changes, GPT-Live duplex settings)? Answer: one gap, Gemini realtime. Fixed, documented, tested. Audit slug <code>2026-10-21-audit-upstream-1-7-0-drift</code>, fix slug <code>2026-10-21-feature-upstream-1-7-0-sync</code>.</p>
+
+<h2>Audit result per changelog item</h2>
+<table><tr><th>1.7.0 item</th><th>Repo before</th><th>Verdict</th></tr>
+<tr class="r"><td>Gemini realtime refuses <code>reasoning_effort</code>, <code>verbosity</code>, <code>service_tier</code>, <code>tool_choice</code>, <code>parallel_tool_calls</code>; sends <code>temperature</code>, <code>max_output_tokens</code></td><td><code>validateModelParameters</code> returned early for non-openai providers; upstream's 422 passed through, docs silent</td><td>Gap (Medium) — fixed</td></tr>
+<tr class="y"><td>Duplex usage cost split (<code>voice_model</code>, <code>backend_model</code>, two cost fields)</td><td>Forwarded unchanged; docs listed <code>usage.mode</code> without <code>duplex</code></td><td>Docs only — fixed</td></tr>
+<tr class="g"><td>Service tiers priced (flex 0.5x, fast/priority 2x)</td><td><code>flex</code> allowed on gpt-6 (reasoning family)</td><td>No code change; documented</td></tr>
+<tr class="g"><td>Duplex settings (<code>backend_model</code>, <code>backend_instructions</code>, knobs, no <code>temperature</code>, no greeting audio/filler/text_only)</td><td>Done in the 1.6.0 sync</td><td>Match</td></tr></table>
+
+<h2>Current → Target</h2>
+<p>Current: <span class="box">PATCH/POST realtime+gemini + knob</span> → <span class="box">no local check</span> → <span class="box">upstream 422 (upstream wording)</span></p>
+<p>Target: <span class="box">PATCH/POST realtime+gemini + knob</span> → <span class="box g">local 400 naming every field + "send null to clear"</span> → <span class="box">nothing sent upstream</span></p>
+
+<h2>Changes</h2>
+<table><tr><th>File</th><th>Change</th></tr>
+<tr><td><code>src/assistant/assistant.rules.js</code></td><td>New <code>GEMINI_REFUSED_KNOBS</code>, exported</td></tr>
+<tr><td><code>src/assistant/assistant.validation.js</code></td><td>realtime+gemini branch in <code>validateModelParameters</code>; runs on create and on the merged row at update</td></tr>
+<tr><td><code>tests/assistant/validation.test.js</code></td><td>4 tests: each knob refused and named, temperature/max_output_tokens and <code>null</code> accepted, OpenAI realtime and gemini/pipeline untouched, defaulted-Gemini full check</td></tr>
+<tr><td><code>tests/assistant/update.test.js</code></td><td>1 test: stored row refused on LLM edit, repaired with <code>null</code>, rename not blocked</td></tr>
+<tr><td><code>docs/ASSISTANT-RULES.md</code>, <code>docs/CHANGELOG.md</code>, <code>swagger.yaml</code></td><td>Rule, traps, <b>BREAKING</b> changelog line, per-knob descriptions, usage <code>duplex</code> fields and priced tiers</td></tr></table>
+
+<h2>Behaviour for existing users</h2>
+<ul><li>A stored Gemini row holding a refused knob: an LLM-config PATCH is refused locally until the knob is sent as <code>null</code> (repair path kept).</li>
+<li>A PATCH not touching <code>assistant_llm_config</code> (rename) is not judged locally, so this check never blocks it. Upstream 1.7.0 still answers 422 for it while the knob stays; clear the knob first.</li>
+<li>OpenAI realtime/pipeline and retired gemini/pipeline rows: unchanged.</li>
+<li>No migration written: number of affected stored rows unknown here. Rollback: revert the one branch in <code>validateModelParameters</code>.</li></ul>
+
+<h2>Verification</h2>
+<table><tr><th>Check</th><th>Before</th><th>After</th></tr>
+<tr><td><code>npm test</code></td><td>181 pass</td><td>186 pass, 0 fail</td></tr>
+<tr><td><code>node --check</code> changed src files</td><td>—</td><td>ok</td></tr>
+<tr><td>yamljs load of <code>swagger.yaml</code></td><td>—</td><td>ok</td></tr></table>
+<p>One test failed on first run: it assumed a rename would see the stored LLM config. It does not by design; the test, not the code, was wrong. Test rewritten and the decision recorded in <code>progress.md</code>.</p>
+
+<h2>Not done / recommended next</h2>
+<ul><li>Read-only script to count stored Gemini rows with refused knobs (needs production Mongo).</li>
+<li>No fresh-context reviewer subagent (≈15 lines of code); self-review only.</li>
+<li>Not reviewed: SIP, auth, inbound-context, frontend.</li></ul>
+<h2>Trace</h2><p>agent-tracking/plans/2026-10-21-audit-upstream-1-7-0-drift/ · agent-tracking/plans/2026-10-21-feature-upstream-1-7-0-sync/ · agent-tracking/research/2026-10-21-audit-upstream-1-7-0-drift.md</p>
+</body></html>

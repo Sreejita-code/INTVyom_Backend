@@ -294,6 +294,11 @@ const assertTtsModelIdAllowed = (provider, model) => {
 const SERVICE_TIERS = ['auto', 'default', 'fast', 'priority', 'flex'];
 const TOOL_CHOICES = ['auto', 'required', 'none'];
 
+// Gemini Live (realtime + gemini) reads only `temperature` and `max_output_tokens`. Upstream 1.7.0
+// answers 422 for these five instead of storing and ignoring them. OpenAI realtime/pipeline
+// still ignore them silently, so the refusal is Gemini-only.
+const GEMINI_REFUSED_KNOBS = ['reasoning_effort', 'verbosity', 'service_tier', 'tool_choice', 'parallel_tool_calls'];
+
 // Create rule: pipeline and cascade have no realtime model to speak for them, so both halves of
 // the TTS pair are required. Realtime ignores TTS entirely.
 const assertTtsPairProvidedForMode = (mode, ttsModel, ttsConfig) => {
@@ -400,6 +405,7 @@ module.exports = {
   GEMINI_VOICES,
   SERVICE_TIERS,
   TOOL_CHOICES,
+  GEMINI_REFUSED_KNOBS,
   STT_MODELS_BY_PROVIDER,
   ELEVENLABS_TTS_MODELS,
   SARVAM_SPEAKERS,

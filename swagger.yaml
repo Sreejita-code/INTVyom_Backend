@@ -3754,7 +3754,10 @@ components:
             Usage and estimated AI-provider cost; `null` when no usage row exists (e.g. the call
             failed before the agent session started). Mid-call values are a snapshot —
             `usage_finalized: true` marks the final totals. `estimated_cost_usd` is a decimal
-            **string** and an estimate.
+            **string** and an estimate. `mode` is `pipeline`, `realtime`, `cascade` or `duplex`;
+            duplex calls (upstream 1.7.0) also carry `voice_model`, `backend_model`,
+            `estimated_cost_voice_usd` and `estimated_cost_backend_usd` (GPT-Live session and
+            backend tokens priced apart). Forwarded unchanged: accept unknown keys.
 
     Pagination:
       type: object
@@ -4099,7 +4102,12 @@ components:
         The seven generation knobs (`temperature` through `parallel_tool_calls`) are accepted
         and stored in every mode but only READ in `cascade` and `duplex` — they are
         `openai.responses.LLM` parameters (in duplex, the backend model's), and pipeline/realtime
-        talk to the Realtime API instead. In duplex they are checked against `backend_model`, and
+        talk to the Realtime API instead. The exception is `realtime` with provider `gemini`:
+        Gemini Live reads only `temperature` and `max_output_tokens`, so `reasoning_effort`,
+        `verbosity`, `service_tier`, `tool_choice` and `parallel_tool_calls` are refused (`400`,
+        naming the fields) instead of being stored and ignored (upstream 1.7.0). A stored Gemini
+        row that still holds one is refused on its next LLM-config edit; send the field as `null`
+        to clear it. In duplex they are checked against `backend_model`, and
         `temperature` is rejected because every backend model is a reasoning model.
 
         A switch into or out of `duplex` replaces the stored `assistant_llm_config` instead of
@@ -4164,21 +4172,25 @@ components:
           minimum: 0
           maximum: 2
           description: >
-            Cascade only (rejected in duplex). Sampling temperature, 0-2 (SDK default 0.8). Higher
+            Cascade, and realtime with provider `gemini` (sent to Gemini Live since upstream 1.7.0).
+            Rejected in duplex. Sampling temperature, 0-2 (SDK default 0.8). Higher
             = more random. IGNORED by reasoning models (`gpt-5`, `gpt-5.x`, `gpt-6-*`) — send
             `reasoning_effort` there.
           example: 0.7
         max_output_tokens:
           type: integer
           minimum: 1
-          description: Cascade only. Cap on output tokens per response. Unset = model default.
+          description: >
+            Cascade, and realtime with provider `gemini` (sent to Gemini Live since upstream
+            1.7.0). Cap on output tokens per response. Unset = model default.
           example: 500
         reasoning_effort:
           type: string
           enum: [none, minimal, low, medium, high, xhigh, max]
           description: >
             Cascade and duplex (backend model), and only on REASONING models (`gpt-5`, `gpt-5.x`,
-            `gpt-6-*`; `minimal` is not accepted on gpt-6). How much the model
+            `gpt-6-*`; `minimal` is not accepted on gpt-6). Refused (`400`) with realtime +
+            `gemini`. How much the model
             thinks before answering. Higher = slower and dearer; on a voice call that is
             audible latency, so prefer `low`/`minimal` unless the task needs the depth.
           example: "low"
@@ -4187,13 +4199,15 @@ components:
           enum: [auto, default, fast, flex, priority]
           description: >
             Cascade and duplex. OpenAI processing/billing tier. `flex` is only available on the
-            gpt-5 generation and gpt-6. Unset = OpenAI's default.
+            gpt-5 generation and gpt-6. Unset = OpenAI's default. Priced in the usage estimate
+            (upstream 1.7.0): `flex` half and `fast`/`priority` double the standard token rate.
+            Refused (`400`) with realtime + `gemini`.
         verbosity:
           type: string
           enum: [low, medium, high]
           description: >
             Cascade only. Constrains response length. `low` suits voice calls, where a long
-            reply is a long wait.
+            reply is a long wait. Refused (`400`) with realtime + `gemini`.
         tool_choice:
           type: string
           enum: [auto, required, none]
@@ -4201,10 +4215,12 @@ components:
             Cascade only. Whether the model may call the assistant's attached tools.
             `none` disables them for this assistant without detaching them. `required`
             needs at least one tool attached. Requires `assistant_end_call_enabled` or a
-            tool in `assistant_llm_config.tool_ids`.
+            tool in `assistant_llm_config.tool_ids`. Refused (`400`) with realtime + `gemini`.
         parallel_tool_calls:
           type: boolean
-          description: Cascade only. Allow more than one tool call in a single response.
+          description: >
+            Cascade only. Allow more than one tool call in a single response. Refused (`400`)
+            with realtime + `gemini`.
         backend_model:
           type: string
           description: >

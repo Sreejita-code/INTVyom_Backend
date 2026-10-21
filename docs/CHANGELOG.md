@@ -4,6 +4,16 @@ Newest first. **BREAKING** marks a change that can break an existing client. Ent
 2026-10-20 were seeded from commit subjects and the README's own breaking-change notes; `git log`
 has the detail. Add a line here with every contract change.
 
+## 2026-10-21 — Upstream 1.7.0: Gemini realtime refuses ignored knobs
+
+- **BREAKING** `assistant_mode: realtime` with provider `gemini` refuses (`400`, naming the fields)
+  `reasoning_effort`, `verbosity`, `service_tier`, `tool_choice` and `parallel_tool_calls`; only
+  `temperature` and `max_output_tokens` reach Gemini Live. Before, they were stored and ignored.
+  A stored Gemini row holding one is refused on its next LLM-config edit until the field is sent as
+  `null`. OpenAI realtime/pipeline unchanged.
+- Docs: duplex `usage` cost split (`voice_model`, `backend_model`, `estimated_cost_voice_usd`,
+  `estimated_cost_backend_usd`) and priced service tiers are upstream-only; the proxy forwards them.
+
 ## 2026-10-20 — Duplex mode, model refresh, docs split
 
 - **BREAKING** `assistant_mode` accepts `duplex` (OpenAI GPT-Live `gpt-live-1`, reasoning handed to

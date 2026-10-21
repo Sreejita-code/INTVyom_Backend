@@ -226,3 +226,42 @@ test('a stored gpt-5.1 row stays editable: the knob checks still know its family
     /not a reasoning model/
   );
 });
+
+test('Gemini realtime refuses the five knobs Gemini Live ignores, naming each one', () => {
+  const gemini = (parameters) => validateModelParameters('realtime', 'gemini', 'gemini-3.8-live', parameters);
+
+  for (const knob of ['reasoning_effort', 'verbosity', 'service_tier', 'tool_choice', 'parallel_tool_calls']) {
+    const result = gemini({ [knob]: knob === 'parallel_tool_calls' ? true : 'low' });
+    assert.strictEqual(result.isValid, false, knob);
+    assert.match(result.message, new RegExp(`assistant_llm_config\\.${knob} is not supported by Gemini Live`));
+  }
+  assert.match(gemini({ verbosity: 'low', service_tier: 'fast' }).message, /verbosity, service_tier are not supported/);
+});
+
+test('Gemini realtime still takes temperature and max_output_tokens, and a null clears a refused knob', () => {
+  const gemini = (parameters) => validateModelParameters('realtime', 'gemini', 'gemini-3.8-live', parameters);
+
+  assert.strictEqual(gemini({ temperature: 0.4, max_output_tokens: 500 }).isValid, true);
+  assert.strictEqual(gemini({ service_tier: null }).isValid, true);
+});
+
+test('the Gemini refusal is realtime-only: OpenAI realtime and legacy gemini/pipeline rows are untouched', () => {
+  assert.strictEqual(
+    validateModelParameters('realtime', 'openai', 'gpt-realtime-1.5', { service_tier: 'fast', tool_choice: 'auto' }).isValid,
+    true
+  );
+  // A retired gemini/pipeline row must stay editable.
+  assert.strictEqual(
+    validateModelParameters('pipeline', 'gemini', 'gemini-3.8-live', { service_tier: 'fast' }).isValid,
+    true
+  );
+});
+
+test('a realtime assistant that defaults to Gemini is refused through the full configuration check', () => {
+  const result = validateAssistantConfiguration({
+    assistant_mode: 'realtime',
+    assistant_llm_config: { model: 'gemini-3.8-live', reasoning_effort: 'low' },
+  });
+  assert.strictEqual(result.isValid, false);
+  assert.match(result.message, /reasoning_effort is not supported by Gemini Live/);
+});

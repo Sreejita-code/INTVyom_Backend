@@ -7,7 +7,7 @@ those shapes do not show. Moved here from the README so the README stays a run g
 
 ## Update semantics
 
-Mirrors the external API's validation rules. Last synced with upstream 1.6.0.
+Mirrors the external API's validation rules. Last synced with upstream 1.7.0.
 
 - Mode only changes on an explicit `assistant_mode`, or when TTS/STT fields are present.
   Sending `assistant_llm_config` on its own is legal in pipeline mode (rotate `api_key`, change
@@ -162,6 +162,17 @@ reverse. The knob checks run against the merged stored+request LLM config, so a 
 stored on a chat model blocks a later model-only switch to a reasoning model until it is
 cleared (`temperature: null`) in the same request.
 
+Gemini realtime reads only two knobs (upstream 1.7.0): `temperature` and `max_output_tokens`.
+`reasoning_effort`, `verbosity`, `service_tier`, `tool_choice` and `parallel_tool_calls` with
+`assistant_mode: realtime` and provider `gemini` (explicit, or the realtime default) are refused with a
+`400` naming every offending field; before 1.7.0 they were stored and ignored. The check runs on the
+merged stored+request LLM config, so an LLM edit on a stored Gemini row that still holds one is refused
+until it is cleared with `null` in the same request (`service_tier: null`). A request that does not touch
+`assistant_llm_config` (a rename) is not judged here; upstream still answers `422` for it while the knob
+stays, so clear it first. Trap: OpenAI realtime and pipeline still accept and ignore the same five
+silently, and a retired `gemini`/`pipeline` row is not judged at all. The refused list lives in
+`GEMINI_REFUSED_KNOBS` (`src/assistant/assistant.rules.js`).
+
 STT — five plugin providers plus `native`:
 
 | Provider | Model default | Notable config |
@@ -223,8 +234,13 @@ idempotent (key on `data.room_name`, or `data.queue_id` for outbound).
 - `data.queue_id` correlates with the `POST /call/outbound` response (outbound only; `null`
   for inbound/web).
 - `data.call_end_reason`: `natural` | `max_duration_exceeded` (may be `null` on legacy records).
-- `data.usage.mode`: `pipeline` | `realtime` | `cascade`. **Breaking:** the old
+- `data.usage.mode`: `pipeline` | `realtime` | `cascade` | `duplex`. **Breaking:** the old
   `usage.llm_mode` key is no longer emitted — read `usage.mode`.
+- Duplex calls (upstream 1.7.0) also carry `data.usage.voice_model`, `backend_model`,
+  `estimated_cost_voice_usd` and `estimated_cost_backend_usd`: the GPT-Live session
+  ($0.05/min) and the backend tokens priced apart. Service tiers are priced: `flex` is half and
+  `fast`/`priority` double the standard token rate, so a non-default tier no longer leaves a call
+  unpriced. The proxy forwards `usage` unchanged; strict clients must accept the new keys.
 - `data.usage.stt_provider` / `stt_model` / `stt_audio_duration` are populated **only** in
   `cascade` mode; `null`/`0` otherwise (the LLM transcribes internally).
 - `data.billable_duration_minutes`: rounded up for connected calls, `0` for non-connected

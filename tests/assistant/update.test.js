@@ -414,3 +414,25 @@ test('a speaker-only PATCH is judged against the stored Sarvam model', async () 
   await updateAssistant('u1', 'ext-1', { assistant_tts_config: { speaker: 'ritu_hi_customer' } });
   assert.strictEqual(sent.patch.data.assistant_tts_config.speaker, 'ritu_hi_customer');
 });
+
+test('a stored Gemini realtime row holding a refused knob: an LLM edit is refused until the knob is cleared with null', async () => {
+  storedAssistant.llm_mode = 'realtime';
+  storedAssistant.llm_provider = 'gemini';
+  storedAssistant.llm_config = { provider: 'gemini', model: 'gemini-3.8-live', service_tier: 'fast', temperature: 0.4 };
+
+  // The merged row is judged, so the stored knob is caught; the message names the repair.
+  await assert.rejects(
+    () => updateAssistant('u1', 'ext-1', { assistant_llm_config: { temperature: 0.2 } }),
+    /service_tier is not supported by Gemini Live.*send it as null/s
+  );
+  assert.strictEqual(sent.patch, null);
+
+  await updateAssistant('u1', 'ext-1', { assistant_llm_config: { service_tier: null } });
+  assert.strictEqual(sent.patch.data.assistant_llm_config.service_tier, null);
+
+  // A request that does not touch the LLM config is not judged locally (upstream decides),
+  // so a rename is never blocked by this check.
+  sent.patch = null;
+  await updateAssistant('u1', 'ext-1', { assistant_name: 'Renamed' });
+  assert.deepStrictEqual(sent.patch.data, { assistant_name: 'Renamed' });
+});

@@ -14,6 +14,7 @@ const {
   assertSarvamTargetLanguageAllowed,
   SERVICE_TIERS,
   TOOL_CHOICES,
+  GEMINI_REFUSED_KNOBS,
 } = require('./assistant.rules');
 
 // Language code standards by provider
@@ -435,6 +436,18 @@ const validateDuplexRestrictions = (config) => {
  * @returns {object} Validation result with isValid flag and message
  */
 const validateModelParameters = (mode, provider, model, parameters = {}, hasTools) => {
+  if (provider === 'gemini' && mode === 'realtime') {
+    const refused = GEMINI_REFUSED_KNOBS.filter((knob) => parameters[knob] != null);
+    if (refused.length > 0) {
+      return {
+        isValid: false,
+        message: `assistant_llm_config.${refused.join(', ')} ${refused.length > 1 ? 'are' : 'is'} not supported by Gemini Live — only ` +
+                 'temperature and max_output_tokens reach the model. Remove the field; to clear a ' +
+                 'stored value send it as null.'
+      };
+    }
+  }
+
   if (provider !== 'openai') {
     return { isValid: true, message: 'No parameter validation needed' };
   }
