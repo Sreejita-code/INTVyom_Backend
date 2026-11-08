@@ -16,6 +16,9 @@ const analyticsRoutes = require('./api/routes/analytics.routes');
 const passthroughRoutes = require('./api/routes/passthrough.routes');
 const audioRoutes = require('./api/routes/audio.routes');
 const meetingRoutes = require('./api/routes/meeting.routes');
+const sttRoutes = require('./api/routes/stt.routes');
+const ttsRoutes = require('./api/routes/tts.routes');
+const llmRoutes = require('./api/routes/llm.routes');
 const requireAuth = require('./core/middleware/requireAuth');
 const createMcpRouter = require('./mcp/swagger-mcp');
 const errorHandler = require('./core/middleware/errorHandler');
@@ -63,6 +66,9 @@ const createApp = () => {
   app.use('/api/passthrough-call', passthroughRoutes);
   app.use('/api/audio', audioRoutes);
   app.use('/api/meeting-call', meetingRoutes);
+  app.use('/api/stt', sttRoutes);
+  app.use('/api/tts', ttsRoutes);
+  app.use('/api/llm', llmRoutes);
 
   // 404 + central error handling — one response shape for every failure.
   app.use(notFound);

@@ -76,4 +76,33 @@ const callExternal = async (
   }
 };
 
-module.exports = { EXTERNAL_BASE, callExternal };
+/**
+ * Call the upstream API and return the raw streaming response (status, headers, body stream).
+ * Used for binary audio (TTS) and SSE (LLM streaming) where response bodies must not be parsed
+ * into memory as JSON. Network failures throw a status-carrying Error; upstream HTTP statuses
+ * are returned as-is (no throw) so the caller can pipe the body through for fidelity.
+ */
+const callExternalStream = async (
+  apiKey,
+  { path, method = 'get', data, params, headers = {}, networkFallback = 'Failed to contact external service', networkStatus }
+) => {
+  try {
+    const response = await axios({
+      method,
+      url: `${EXTERNAL_BASE}${path}`,
+      ...(data !== undefined && { data }),
+      ...(params !== undefined && { params }),
+      headers: { ...headers, ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+      httpsAgent: agent,
+      responseType: 'stream',
+      validateStatus: () => true,
+    });
+    return { status: response.status, headers: response.headers || {}, data: response.data };
+  } catch (error) {
+    const wrapped = new Error(networkFallback);
+    if (networkStatus) wrapped.status = networkStatus;
+    throw wrapped;
+  }
+};
+
+module.exports = { EXTERNAL_BASE, callExternal, callExternalStream };

@@ -98,6 +98,9 @@ INTVyom_Backend/
     ├── analytics/            # domain: analytics proxy
     ├── call/                 # domain: outbound call trigger
     ├── audio/                # domain: audio library proxy
+    ├── stt/                  # domain: standalone speech-to-text proxy (multipart upload)
+    ├── tts/                  # domain: standalone text-to-speech proxy (JSON or binary stream)
+    ├── llm/                  # domain: standalone LLM chat proxy (JSON or SSE stream)
     ├── sip/                  # domain: SIP trunk CRUD
     ├── tool/                 # domain: tool CRUD + attach/detach
     ├── webcall/              # domain: web-call token
@@ -110,8 +113,8 @@ INTVyom_Backend/
     │   ├── dev-docs.js       # loads docs/*.md once at startup; lookups by file name only
     │   └── swagger-mcp.js    # Streamable HTTP router + the eight docs-only tools
     ├── services/
-    │   └── livekit/          # the ONLY external HTTP client (callExternal) — axios lives here
-    │       └── livekitService.js
+    │   └── livekit/          # the ONLY external HTTP client — axios lives here
+    │       └── livekitService.js  # callExternal (JSON) + callExternalStream (binary/SSE passthrough)
     └── core/
         ├── config.js         # Settings singleton — the only place process.env is read
         ├── async/mapLimit.js # bounded-concurrency map, ordered results (billing fan-out)

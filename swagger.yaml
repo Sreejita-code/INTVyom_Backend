@@ -78,6 +78,12 @@ tags:
     description: Audio file upload, listing, and management
   - name: Meeting
     description: Send an assistant into a video meeting (Google Meet)
+  - name: STT
+    description: Standalone speech-to-text transcription (proxied upstream)
+  - name: TTS
+    description: Standalone text-to-speech synthesis (proxied upstream)
+  - name: LLM
+    description: Standalone LLM chat completions, including SSE streaming (proxied upstream)
   - name: Docs
     description: API documentation MCP server — describes this API, never calls it
 
@@ -3011,6 +3017,411 @@ paths:
                       type: object
         '500':
           $ref: '#/components/responses/ServerError'
+
+  # ==================== STANDALONE AI ====================
+  /api/stt/transcribe:
+    post:
+      tags: [STT]
+      summary: Transcribe an audio file (standalone STT)
+      description: |
+        Proxies the upstream standalone STT endpoint. Requires the caller's VoiceKit API key.
+        The uploaded audio is forwarded to the selected STT provider. `assistant_id` (optional)
+        can inherit STT configuration upstream; when provided here it is resolved against the
+        authenticated user's assistants (local id or external assistant id) before forwarding.
+      parameters:
+        - name: X-Provider-API-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional provider API key forwarded upstream. Never stored or logged by this proxy.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Audio file (wav, mp3, ogg, webm, m4a). Upstream max 25 MB.
+                assistant_id:
+                  type: string
+                  description: Optional assistant id (local or external) to inherit STT config upstream.
+                provider:
+                  type: string
+                  enum: [sarvam, cartesia, deepgram, openai, elevenlabs]
+                  description: STT provider. Upstream default is sarvam.
+                model:
+                  type: string
+                  description: Provider model (for example saaras:v3, nova-3, whisper-1).
+                language:
+                  type: string
+                  description: Language code (for example en-US, hi-IN, auto).
+      responses:
+        '200':
+          description: Audio transcribed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      text:
+                        type: string
+                      language:
+                        type: string
+                        nullable: true
+                      duration_seconds:
+                        type: number
+                        nullable: true
+                      provider:
+                        type: string
+                      model:
+                        type: string
+                        nullable: true
+                      usage:
+                        type: object
+                        properties:
+                          audio_duration_seconds:
+                            type: number
+                            nullable: true
+                          estimated_cost_usd:
+                            type: number
+                            nullable: true
+                          pricing_complete:
+                            type: boolean
+                          provider:
+                            type: string
+                          model:
+                            type: string
+                            nullable: true
+        '400':
+          description: Missing file or invalid multipart upload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Assistant not found for this user (when assistant_id is provided)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: Audio file exceeds the 25 MB limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Invalid provider/format or upstream validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Upstream provider failure or network error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/tts/synthesize:
+    post:
+      tags: [TTS]
+      summary: Synthesize speech from text (standalone TTS)
+      description: |
+        Proxies the upstream standalone TTS endpoint. `response_format=audio` (default) streams
+        binary audio and preserves upstream TTS/usage headers. `response_format=json` returns
+        base64 audio and usage in the JSON body. `assistant_id` (optional) is resolved against
+        the authenticated user's assistants before forwarding.
+      parameters:
+        - name: X-Provider-API-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional provider API key forwarded upstream. Never stored or logged by this proxy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 5000
+                  description: Text to synthesize.
+                assistant_id:
+                  type: string
+                  description: Optional assistant id (local or external) to inherit TTS config upstream.
+                provider:
+                  type: string
+                  enum: [cartesia, sarvam, elevenlabs, mistral]
+                  description: TTS provider. Upstream default is cartesia.
+                model:
+                  type: string
+                voice:
+                  type: string
+                language:
+                  type: string
+                save_to_library:
+                  type: boolean
+                  default: false
+                  description: Passed through upstream; when true, upstream may store audio in the user's audio library.
+                response_format:
+                  type: string
+                  enum: [audio, json]
+                  default: audio
+                  description: '`audio` streams binary audio; `json` returns base64 audio and usage.'
+      responses:
+        '200':
+          description: Speech synthesized successfully
+          content:
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      audio_base64:
+                        type: string
+                      media_type:
+                        type: string
+                      provider:
+                        type: string
+                      model:
+                        type: string
+                        nullable: true
+                      usage:
+                        type: object
+                        properties:
+                          characters_count:
+                            type: integer
+                            nullable: true
+                          audio_duration_seconds:
+                            type: number
+                            nullable: true
+                          estimated_cost_usd:
+                            type: number
+                            nullable: true
+                          pricing_complete:
+                            type: boolean
+                          provider:
+                            type: string
+                          model:
+                            type: string
+                            nullable: true
+          headers:
+            X-TTS-Characters:
+              schema:
+                type: string
+              description: Present on audio responses.
+            X-Audio-Duration:
+              schema:
+                type: string
+              description: Present on audio responses.
+            X-Estimated-Cost-USD:
+              schema:
+                type: string
+              description: Present on audio responses.
+            X-Pricing-Complete:
+              schema:
+                type: string
+              description: Present on audio responses.
+            X-Provider:
+              schema:
+                type: string
+              description: Present on audio responses.
+            X-Model:
+              schema:
+                type: string
+              description: Present on audio responses.
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Assistant not found for this user (when assistant_id is provided)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Empty/invalid text or upstream validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Upstream provider failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/llm/chat:
+    post:
+      tags: [LLM]
+      summary: Run a standalone LLM chat completion
+      description: |
+        Proxies the upstream standalone LLM endpoint. `stream=false` (default) returns JSON with
+        usage/cost. `stream=true` proxies the upstream Server-Sent Events (SSE) stream
+        (`text/event-stream`) and ends with `data: [DONE]`. `assistant_id` (optional) is resolved
+        against the authenticated user's assistants before forwarding.
+      parameters:
+        - name: X-Provider-API-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional provider API key forwarded upstream. Never stored or logged by this proxy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [role, content]
+                    properties:
+                      role:
+                        type: string
+                        enum: [system, user, assistant]
+                      content:
+                        type: string
+                assistant_id:
+                  type: string
+                  description: Optional assistant id (local or external) to inherit LLM config upstream.
+                provider:
+                  type: string
+                  enum: [openai, gemini]
+                  description: LLM provider. Upstream default is openai.
+                model:
+                  type: string
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 2
+                max_tokens:
+                  type: integer
+                  minimum: 1
+                stream:
+                  type: boolean
+                  default: false
+                  description: When true, response is proxied as SSE (`text/event-stream`).
+      responses:
+        '200':
+          description: Chat completion successful (JSON) or SSE stream
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: object
+                        properties:
+                          role:
+                            type: string
+                          content:
+                            type: string
+                      provider:
+                        type: string
+                      model:
+                        type: string
+                        nullable: true
+                      usage:
+                        type: object
+                        properties:
+                          prompt_tokens:
+                            type: integer
+                            nullable: true
+                          completion_tokens:
+                            type: integer
+                            nullable: true
+                          total_tokens:
+                            type: integer
+                            nullable: true
+                          estimated_cost_usd:
+                            type: number
+                            nullable: true
+                          pricing_complete:
+                            type: boolean
+                          provider:
+                            type: string
+                          model:
+                            type: string
+                            nullable: true
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE delta chunks followed by `data: [DONE]`.
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Assistant not found for this user (when assistant_id is provided)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Empty messages or upstream validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: Upstream provider failure or network timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   # ==================== AUDIO ====================
   /api/audio/upload:

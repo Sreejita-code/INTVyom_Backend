@@ -68,6 +68,11 @@ with `api_key = null` and cannot authenticate until that is repaired.
 | Context strategy | `/inbound_context_strategy/create`, `list`, `details/{id}`, `update/{id}`, `delete/{id}` |
 | Audio | `/audio/upload`, `/audio/list`, `/audio/{id}` |
 | Analytics | `/analytics/...` (forwarded) |
+| Standalone STT | `/stt/transcribe` (multipart audio; optional `assistant_id` inherits config upstream) |
+| Standalone TTS | `/tts/synthesize` (`response_format=audio` binary stream + `X-TTS-*` headers, or `response_format=json` base64+usage; optional `assistant_id`) |
+| Standalone LLM | `/llm/chat` (JSON completion with usage, or `stream=true` SSE `text/event-stream`; optional `assistant_id`) |
+
+These standalone endpoints are proxied as `POST /api/stt/transcribe`, `/api/tts/synthesize`, and `/api/llm/chat`. When `assistant_id` is supplied, this backend resolves it to an assistant owned by the authenticated user before forwarding. An optional `X-Provider-API-Key` header is passed through upstream and is never logged or stored.
 
 Mirroring upstream validation locally (model allowlists, TTS/STT pairing) is deliberate: a bad
 value fails here with a readable `400` and `suggestions`. When upstream adds or retires a model,

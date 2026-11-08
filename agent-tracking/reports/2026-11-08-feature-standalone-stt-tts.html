@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Report: Standalone STT/TTS/LLM proxy endpoints</title>
+  <style>
+    :root { --bg:#0b1020; --card:#121a2b; --text:#e8eefc; --muted:#a8b3cf; --accent:#6aa9ff; --ok:#3ddc97; --warn:#ffcc66; --line:#24304f; }
+    body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:linear-gradient(180deg,#0b1020,#0e1426); color:var(--text); }
+    main { max-width:1100px; margin:0 auto; padding:32px 20px 56px; }
+    h1,h2,h3 { line-height:1.2; }
+    h1 { margin:0 0 8px; font-size:28px; }
+    h2 { margin:28px 0 10px; font-size:18px; }
+    p,li { color:var(--text); }
+    .muted { color:var(--muted); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:12px 0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+    code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    pre { background:#09101d; border:1px solid var(--line); border-radius:10px; padding:12px; overflow:auto; color:#d7e3ff; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { border:1px solid var(--line); padding:8px 10px; vertical-align:top; }
+    th { background:#0d1526; text-align:left; }
+    .ok { color:var(--ok); font-weight:600; }
+    .tag { display:inline-block; padding:2px 8px; border-radius:999px; background:#182544; border:1px solid var(--line); color:var(--muted); font-size:12px; }
+    .diagram { display:grid; grid-template-columns:1fr 40px 1fr; gap:8px; align-items:stretch; }
+    .box { background:#09101d; border:1px solid var(--line); border-radius:10px; padding:12px; }
+    .arrow { display:flex; align-items:center; justify-content:center; color:var(--accent); font-size:22px; }
+    @media (max-width:700px){ .diagram{grid-template-columns:1fr;} .arrow{transform:rotate(90deg);} }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Standalone STT / TTS / LLM proxy endpoints</h1>
+  <p class="muted">Task: <code>2026-11-08-feature-standalone-stt-tts</code> · Type: feature · Process A (agent-tracking workflow) · Date: 2026-11-08</p>
+
+  <div class="card">
+    <h2>Executive summary</h2>
+    <p>Added proxy support for three upstream standalone LiveKit Agents endpoints documented by the <code>api-livekit-docs</code> MCP: <strong>STT</strong> (<code>/stt/transcribe</code>), <strong>TTS</strong> (<code>/tts/synthesize</code>), and <strong>LLM</strong> (<code>/llm/chat</code>). The backend now exposes authenticated <code>/api/*</code> routes that validate input, resolve optional <code>assistant_id</code> against the caller’s assistants, forward optional <code>X-Provider-API-Key</code> upstream (never logged/stored), proxy STT multipart uploads, stream TTS binary audio / LLM SSE responses, and preserve upstream usage/cost semantics. Swagger and developer docs were updated. <span class="ok">All tests pass (195/195).</span></p>
+  </div>
+
+  <h2>Current → Target</h2>
+  <div class="diagram">
+    <div class="box">
+      <strong>Before</strong>
+      <ul>
+        <li>No proxy routes for standalone STT/TTS/LLM.</li>
+        <li><code>swagger.yaml</code> had no <code>/api/stt</code>, <code>/api/tts</code>, <code>/api/llm</code> paths.</li>
+        <li><code>callExternal</code> parsed JSON responses only; not suitable for binary audio or SSE passthrough.</li>
+      </ul>
+    </div>
+    <div class="arrow">→</div>
+    <div class="box">
+      <strong>After</strong>
+      <ul>
+        <li><code>POST /api/stt/transcribe</code>, <code>/api/tts/synthesize</code>, <code>/api/llm/chat</code> mounted behind <code>requireAuth</code>.</li>
+        <li>Additive <code>callExternalStream</code> in <code>src/services/livekit/livekitService.js</code> (axios confined to services).</li>
+        <li>Swagger/docs/changelog updated; route tests added; full suite green.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Scope & sources</h2>
+  <div class="card">
+    <table>
+      <tr><th>Item</th><th>Value</th></tr>
+      <tr><td>Upstream source</td><td><code>api-livekit-docs</code> MCP: <code>api/stt.md</code>, <code>api/tts.md</code>, <code>api/llm.md</code> (read 2026-11-08)</td></tr>
+      <tr><td>Target</td><td>Proxy all three standalone endpoints under <code>/api</code>, matching repo conventions</td></tr>
+      <tr><td>Auth</td><td>Existing <code>requireAuth</code> (Bearer VoiceKit key); upstream forwarded via service layer</td></tr>
+      <tr><td>Constraints</td><td>No new deps, no API breaks, no git side effects, no logging of provider keys/upstream bodies</td></tr>
+      <tr><td>Out of scope</td><td>Local usage/pricing persistence, frontend, audio-library implementation beyond upstream <code>save_to_library</code> pass-through</td></tr>
+    </table>
+  </div>
+
+  <h2>Changes (file by file)</h2>
+  <div class="card">
+    <table>
+      <tr><th>Area</th><th>Files</th><th>What changed</th></tr>
+      <tr><td>Upstream client</td><td><code>src/services/livekit/livekitService.js</code></td><td>Added additive <code>callExternalStream</code> (<code>responseType:'stream'</code>, <code>validateStatus: () => true</code>) returning raw <code>{status, headers, data}</code> for binary/SSE passthrough. <code>callExternal</code> unchanged.</td></tr>
+      <tr><td>STT</td><td><code>src/stt/stt.service.js</code>, <code>src/api/routes/stt.routes.js</code>, <code>src/server.js</code></td><td>Multipart proxy: <code>multer</code> memory upload (<code>file</code>, 25MB), basic extension/provider guards, optional <code>assistant_id</code> resolved to owned external assistant, optional <code>X-Provider-API-Key</code> forwarded, multipart forwarded to upstream <code>/stt/transcribe</code>.</td></tr>
+      <tr><td>TTS</td><td><code>src/tts/tts.service.js</code>, <code>src/api/routes/tts.routes.js</code>, <code>src/server.js</code></td><td>Zod validation (<code>text</code> 1–5000, provider/format). <code>response_format=json</code> proxies JSON; <code>audio</code> (default) streams binary and forwards <code>Content-*</code>/<code>X-TTS-*</code>/provider/model/usage headers. <code>save_to_library</code> passed through.</td></tr>
+      <tr><td>LLM</td><td><code>src/llm/llm.service.js</code>, <code>src/api/routes/llm.routes.js</code>, <code>src/server.js</code></td><td>Zod validation (non-empty <code>messages</code>, roles, provider openai|gemini, temperature/max_tokens/stream). <code>stream=false</code> proxies JSON; <code>stream=true</code> proxies SSE with content-type/SSE buffering headers handled.</td></tr>
+      <tr><td>Tests</td><td><code>tests/api/routes/stt.routes.test.js</code>, <code>tts.routes.test.js</code>, <code>llm.routes.test.js</code></td><td>9 tests covering validation, JSON responses, provider-key forwarding, multipart forwarding, TTS audio header/body passthrough, LLM SSE passthrough.</td></tr>
+      <tr><td>Contract/docs</td><td><code>swagger.yaml</code>, <code>docs/UPSTREAM.md</code>, <code>docs/ARCHITECTURE.md</code>, <code>docs/CHANGELOG.md</code></td><td>Added STT/TTS/LLM tags and paths, optional provider-key header, request/response/error schemas; documented upstream standalone endpoints, architecture additions, and changelog entry.</td></tr>
+      <tr><td>Tracking</td><td><code>agent-tracking/*</code></td><td>Scope, research, plan, tasks, progress, index row updated; this report.</td></tr>
+    </table>
+  </div>
+
+  <h2>Behavior notes / decisions</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Assistant ownership</h3>
+      <p><code>assistant_id</code> (optional) is resolved via <code>findByLocalOrExternalId</code> scoped to <code>req.user._id</code> and forwarded as the owned assistant’s external id. Unknown/unowned ids return <code>404</code> with the proxy error shape, consistent with repo conventions.</p>
+    </div>
+    <div class="card">
+      <h3>Streaming fidelity</h3>
+      <p>TTS audio and LLM SSE use <code>callExternalStream</code> and pipe upstream bodies/headers. JSON-mode endpoints use <code>callExternal</code> and the central error handler. Streamed non-2xx responses are passed through for fidelity; strict <code>{error}</code> normalization for all streamed error bodies would require buffering.</p>
+    </div>
+    <div class="card">
+      <h3>Provider key passthrough</h3>
+      <p><code>X-Provider-API-Key</code> is read from the incoming request and forwarded upstream only when present. It is not stored, not written to logs, and not included in responses.</p>
+    </div>
+  </div>
+
+  <h2>Verification (real output)</h2>
+  <div class="card">
+    <pre>node --check src/services/livekit/livekitService.js src/stt/stt.service.js src/tts/tts.service.js src/llm/llm.service.js \
+  src/api/routes/stt.routes.js src/api/routes/tts.routes.js src/api/routes/llm.routes.js src/server.js \
+  tests/api/routes/stt.routes.test.js tests/api/routes/tts.routes.test.js tests/api/routes/llm.routes.test.js
+OK
+
+node --test tests/api/routes/stt.routes.test.js tests/api/routes/tts.routes.test.js tests/api/routes/llm.routes.test.js
+# tests 9 / pass 9 / fail 0
+
+node -e "const y=require('yamljs');y.load('swagger.yaml'); console.log('ok')"
+ok
+
+npm test
+# tests 195 / suites 0 / pass 195 / fail 0 / skipped 0 / duration ~4.1s</pre>
+  </div>
+
+  <h2>Deliberately not done / follow-ups</h2>
+  <div class="card">
+    <ul>
+      <li><strong>Not changed:</strong> <code>docs/ASSISTANT-RULES.md</code> (no local assistant-rule behavior changed), <code>README.md</code> (no setup/env/run changes), existing <code>callExternal</code> behavior.</li>
+      <li><strong>No git side effects:</strong> changes are in the working tree for review; nothing committed/pushed.</li>
+      <li><strong>Possible follow-up:</strong> if product wants strict <code>{error}</code> JSON bodies for streamed upstream 4xx/5xx responses, add bounded buffering + content-type detection for TTS/LLM stream error paths.</li>
+      <li><strong>Possible follow-up:</strong> end-to-end/integration tests against a mocked upstream HTTP server (beyond route-level service mocks) if you want deeper multipart/stream contract checks.</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>
