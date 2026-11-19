@@ -4,6 +4,14 @@ Newest first. **BREAKING** marks a change that can break an existing client. Ent
 2026-10-20 were seeded from commit subjects and the README's own breaking-change notes; `git log`
 has the detail. Add a line here with every contract change.
 
+## 2026-11-19 — Exotel recording proxy
+
+- Added authenticated `POST /api/call/recording`: downloads a recording from an Exotel HTTPS URL and
+  returns the audio bytes with `Content-Type`/`Content-Disposition`; nothing is stored. Requires
+  `EXOTEL_API_KEY` and `EXOTEL_API_TOKEN` (Basic auth). Only `recordings.exotel.com` and
+  `recordings.<region>.exotel.com` hosts are accepted, redirects are capped at 3 and revalidated,
+  responses at 100 MB, and upstream error text is scrubbed of credentials and signed-URL values.
+
 ## 2026-11-08 — Standalone STT, TTS and LLM proxies
 
 - Added proxied standalone AI endpoints (authenticated, upstream LiveKit Agents API): `POST /api/stt/transcribe` (multipart audio transcription with usage/cost), `POST /api/tts/synthesize` (speech synthesis; `response_format=audio` streams binary audio and preserves `X-TTS-*`/usage headers, `response_format=json` returns base64 audio + usage; `save_to_library` passed through), and `POST /api/llm/chat` (chat completions with usage/cost; `stream=true` proxies SSE `text/event-stream`). Optional `assistant_id` is resolved against the caller's assistants before forwarding; optional `X-Provider-API-Key` is forwarded upstream and never logged/stored. Swagger and developer docs updated.

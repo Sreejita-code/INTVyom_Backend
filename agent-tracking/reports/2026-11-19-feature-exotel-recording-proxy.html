@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Exotel recording proxy — feature report</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1, h2 { line-height: 1.25; }
+  h2 { margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: .3rem; }
+  code, pre { background: #f4f4f4; border-radius: 4px; }
+  code { padding: .1rem .3rem; }
+  pre { padding: .8rem; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #ddd; padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  .flow { display: flex; align-items: stretch; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
+  .col { flex: 1 1 260px; border: 1px solid #ccc; border-radius: 8px; padding: 1rem; }
+  .col.target { border-color: #2f7d32; background: #f3fbf3; }
+  .arrow { align-self: center; font-size: 2rem; color: #666; }
+  .tag { display: inline-block; font-size: .75rem; padding: .1rem .4rem; border-radius: 3px; background: #eee; }
+  ul { padding-left: 1.3rem; }
+</style>
+</head>
+<body>
+<h1>Exotel recording proxy — feature report</h1>
+<p><span class="tag">2026-11-19</span> <span class="tag">feature</span> <span class="tag">status: done</span></p>
+
+<h2>Current → Target</h2>
+<div class="flow">
+  <div class="col">
+    <h3>Current</h3>
+    <p>No recording endpoint. <code>/api/call</code> only triggers and polls outbound calls.</p>
+    <p>No Exotel client, no Exotel env vars, no Exotel-specific validation in the service.</p>
+    <p>The pasted reference implementation used Supabase and TypeScript — neither exists in this repo.</p>
+  </div>
+  <div class="arrow">→</div>
+  <div class="col target">
+    <h3>Target</h3>
+    <p>Authenticated <code>POST /api/call/recording</code> returns the Exotel MP3 bytes directly.</p>
+    <p>New <code>src/services/exotel/</code> client with host allowlist, Basic auth, bounded redirects and sanitized errors.</p>
+    <p>Documented in Swagger, README env table, ARCHITECTURE and CHANGELOG. Nothing persisted.</p>
+  </div>
+</div>
+
+<h2>What shipped</h2>
+<ul>
+  <li><strong>Endpoint:</strong> <code>POST /api/call/recording</code> with <code>{ recording_url }</code>, behind the existing bearer-key guard. Returns binary audio with <code>Content-Type</code>, <code>Content-Length</code>, <code>Content-Disposition</code> and <code>Cache-Control: no-store</code>. Validation errors are 400; service errors keep their status.</li>
+  <li><strong>Exotel client:</strong> HTTPS-only allowlist for <code>recordings.exotel.com</code> / <code>recordings.&lt;region&gt;.exotel.com</code>, no userinfo or explicit non-default port. Manual redirects, max 3 hops, each target revalidated. 30 s timeout, no-cache. Mandatory Basic auth from Settings.</li>
+  <li><strong>Limits and safety:</strong> 100 MB success-body cap; 64 KB error-body cap; upstream XML/JSON/S3 error codes parsed and scrubbed of raw credentials, the Base64 Authorization value, full URLs and long query-token values before reaching the caller or the 5xx log.</li>
+  <li><strong>Config and docs:</strong> <code>EXOTEL_API_KEY</code> / <code>EXOTEL_API_TOKEN</code> added only to <code>src/core/config.js</code>, mirrored in <code>.env.example</code> and README. Swagger gained the new path with binary content types; CHANGELOG and ARCHITECTURE updated.</li>
+  <li><strong>Tests:</strong> 13 service tests and 4 route tests added, plus the new path added to the existing auth-coverage test. All run offline with an injected <code>fetch</code>.</li>
+</ul>
+
+<h2>Deliberately not done</h2>
+<ul>
+  <li>Supabase storage, <code>org_settings</code>, retention metadata, GridFS — the user chose stream-only and said "no storing required".</li>
+  <li>Exotel webhook receiver, call-id lookup, or any change to LiveKit proxy behaviour.</li>
+  <li>No git commit or branch; all changes are in the working tree.</li>
+</ul>
+
+<h2>Found but not fixed / known trade-offs</h2>
+<ul>
+  <li>The response is buffered up to 100 MB before <code>res.send(Buffer)</code>, not chunked-piped. This keeps error responses clean and the size cap enforceable; concurrent large downloads use memory. Chunked streaming would need a different failure strategy.</li>
+  <li>WHATWG <code>URL</code> normalises an explicit <code>:443</code> away, so that spelling is accepted. Same host and port — no security impact.</li>
+  <li>Credentials are mandatory per the requested behaviour even though the supplied curl works unauthenticated. If Exotel rejects Basic auth on public recording URLs, switch the client to optional auth.</li>
+  <li>The environment was missing three declared dependencies (<code>zod</code>, <code>supertest</code>, <code>proxyquire</code>). They were installed with <code>--no-save --no-package-lock</code>; no lockfile changed. Six pre-existing test files had been failing for this reason before any code change.</li>
+</ul>
+
+<h2>Verification</h2>
+<pre>node --test
+  tests 212
+  pass  212
+  fail  0
+
+node --check  src/services/exotel/exotelRecordingService.js
+              src/api/routes/call.routes.js
+              src/core/config.js
+              tests/services/exotel/exotelRecordingService.test.js
+              tests/api/routes/call.recording.routes.test.js
+  → no syntax errors
+
+node -e "require('yamljs').load('swagger.yaml')"
+  → swagger ok
+
+git status --short  → no lockfile changes</pre>
+
+<p>Independent read-only review found no high-severity issues. Its low-severity findings were addressed:
+Base64 authorization redaction, bounded error bodies, accurate Swagger content types, and a guard against
+over-redacting short query values.</p>
+</body>
+</html>

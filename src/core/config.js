@@ -11,6 +11,9 @@ const Settings = {
   // Opt-in resolver override for hosts whose system DNS cannot resolve the Atlas SRV record
   // (seen on WSL). Unset means the system resolver, which private/VPC deploys depend on.
   dnsServers: (process.env.DNS_SERVERS || '').split(',').map((s) => s.trim()).filter(Boolean),
+  // Required by POST /api/call/recording. Read only here; the Exotel client uses Settings.
+  exotelApiKey: (process.env.EXOTEL_API_KEY || '').trim(),
+  exotelApiToken: (process.env.EXOTEL_API_TOKEN || '').trim(),
 };
 
 module.exports = Settings;

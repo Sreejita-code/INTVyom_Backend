@@ -80,6 +80,7 @@ const PROTECTED_PATHS = [
   ['assistant', '/api/assistant/list'],
   ['sip', '/api/sip/list'],
   ['call', '/api/call/outbound'],
+  ['call-recording', '/api/call/recording'],
   ['integration', '/api/integration/get'],
   ['tool', '/api/tool/list'],
   ['web-call', '/api/web-call/get-token'],

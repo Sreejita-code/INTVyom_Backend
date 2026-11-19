@@ -1498,6 +1498,87 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/call/recording:
+    post:
+      tags: [Call]
+      summary: Download an Exotel call recording
+      description: >
+        Fetches the MP3 at an Exotel recording URL and returns the bytes as the response body —
+        nothing is stored. The server must have `EXOTEL_API_KEY` and `EXOTEL_API_TOKEN` configured;
+        they are sent to Exotel as HTTP Basic auth. Only HTTPS URLs on `recordings.exotel.com` or
+        `recordings.<region>.exotel.com` are accepted. Redirects are followed up to 3 times and each
+        target is revalidated against the same allowlist. Responses are capped at 100 MB, and
+        upstream error text is scrubbed of credentials and signed-URL query values.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recording_url]
+              properties:
+                recording_url:
+                  type: string
+                  format: uri
+                  description: Full Exotel recording URL, including any signed query string.
+                  example: "https://recordings.mum1.exotel.com/exotelrecordings/lokaviveka1m/62d88ab4808bc871aa7800a99e7b1abi.mp3"
+      responses:
+        '200':
+          description: >
+            Recording audio. `Content-Type` mirrors Exotel (any `audio/*` or
+            `application/octet-stream`), falling back to `audio/mpeg` when the upstream value is
+            missing or unusable.
+          headers:
+            Content-Type:
+              description: Audio MIME type returned by Exotel, or the audio/mpeg fallback.
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+            Content-Disposition:
+              description: Attachment filename derived from the recording URL.
+              schema:
+                type: string
+              example: 'attachment; filename="62d88ab4808bc871aa7800a99e7b1abi.mp3"'
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: recording_url is missing or is not an allowed HTTPS Exotel recording URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '502':
+          description: The Exotel request failed, a redirect was untrusted, or the response exceeded the size cap.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/call/queue/{queue_id}:
     get:
       tags: [Call]

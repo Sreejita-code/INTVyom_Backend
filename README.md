@@ -29,6 +29,8 @@ Create `.env` in the project root (already ignored by git):
 ```env
 PORT=3000
 MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/intvoicekit?retryWrites=true&w=majority
+EXOTEL_API_KEY=<exotel-api-key>
+EXOTEL_API_TOKEN=<exotel-api-token>
 ```
 
 Every variable the runtime reads — all of them in `src/core/config.js`, mirrored by
@@ -40,6 +42,8 @@ Every variable the runtime reads — all of them in `src/core/config.js`, mirror
 | `MONGO_URI` | none (required) | MongoDB connection string |
 | `EXTERNAL_API_BASE` | `https://api-livekit-vyom.indusnettechnologies.com` | LiveKit Agents host; override for staging or a local mock |
 | `DNS_SERVERS` | unset (system resolver) | Comma-separated resolvers applied before the MongoDB connect, e.g. `8.8.8.8,1.1.1.1`. Only for machines whose resolver cannot look up the `mongodb+srv` record (seen on WSL). Leave unset in deploys: it replaces DNS for the whole process, so private/VPC hostnames stop resolving |
+| `EXOTEL_API_KEY` | none (required for recording downloads) | Exotel Basic-auth user for `POST /api/call/recording`; the endpoint fails with 500 if missing |
+| `EXOTEL_API_TOKEN` | none (required for recording downloads) | Exotel Basic-auth password for `POST /api/call/recording` |
 
 Notes:
 - Provider keys (TTS: `sarvam`/`cartesia`/`elevenlabs`/`mistral`, STT: `sarvam`/`cartesia`/`deepgram`/`elevenlabs`/`openai`, LLM: `openai`/`gemini`) are stored through integration APIs, not read from process env. Several vendors share one row across slots — see [docs/ASSISTANT-RULES.md](docs/ASSISTANT-RULES.md).

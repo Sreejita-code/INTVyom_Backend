@@ -113,8 +113,10 @@ INTVyom_Backend/
     │   ├── dev-docs.js       # loads docs/*.md once at startup; lookups by file name only
     │   └── swagger-mcp.js    # Streamable HTTP router + the eight docs-only tools
     ├── services/
-    │   └── livekit/          # the ONLY external HTTP client — axios lives here
-    │       └── livekitService.js  # callExternal (JSON) + callExternalStream (binary/SSE passthrough)
+    │   ├── livekit/          # axios lives here
+    │   │   └── livekitService.js  # callExternal (JSON) + callExternalStream (binary/SSE passthrough)
+    │   └── exotel/           # recording download client (native fetch, no axios)
+    │       └── exotelRecordingService.js  # host allowlist, redirects, Basic auth, sanitized errors
     └── core/
         ├── config.js         # Settings singleton — the only place process.env is read
         ├── async/mapLimit.js # bounded-concurrency map, ordered results (billing fan-out)
